@@ -175,6 +175,92 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ── set_permissions tool — LLM can request level change ──
+  pi.registerTool({
+    name: "set_permissions",
+    label: "Set Permissions",
+    description:
+      "Request to change the permission level. Levels: 1=Ask Permissions (prompt for writes/bash), 2=Accept Edits (auto-allow file edits within project), 3=Plan Mode (read-only), 4=Auto Mode (classify bash by risk), 5=Bypass (no prompts, requires user double-confirm). Use this when you need elevated permissions to complete a task.",
+    promptSnippet: "Request permission level change (1-5)",
+    promptGuidelines: [
+      "Use set_permissions to request elevated permissions when blocked by the current level. Call set_permissions with the target level number and a brief reason.",
+    ],
+    parameters: Type.Object({
+      level: Type.Number({ description: "Target permission level (1-5)" }),
+      reason: Type.Optional(
+        Type.String({ description: "Why this level is needed" }),
+      ),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const level = params.level;
+      if (level < 1 || level > 5 || !Number.isInteger(level)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Invalid level: ${level}. Must be an integer 1-5.`,
+            },
+          ],
+          details: {},
+        };
+      }
+
+      if (level === currentLevel) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Already at Level ${level} — ${LEVEL_NAMES[level as PermissionLevel]}.`,
+            },
+          ],
+          details: {},
+        };
+      }
+
+      if (!ctx.hasUI) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Cannot change permissions in non-interactive mode.`,
+            },
+          ],
+          details: {},
+        };
+      }
+
+      const targetName = LEVEL_NAMES[level as PermissionLevel];
+      const reasonText = params.reason ? `\n\nReason: ${params.reason}` : "";
+      const approved = await ctx.ui.confirm(
+        `Change permissions to Level ${level}?`,
+        `Switch to "${targetName}".${reasonText}`,
+      );
+
+      if (approved) {
+        await activateLevel(level as PermissionLevel, ctx);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Permission level set to ${level} — ${targetName}.`,
+            },
+          ],
+          details: { level },
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Permission level change to ${level} was declined by user.`,
+          },
+        ],
+        details: {},
+      };
+    },
+  });
+
   // ── Tool call interception ──
   pi.on("tool_call", async (event, ctx) => {
     const toolName = event.toolName;
