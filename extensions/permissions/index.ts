@@ -97,6 +97,17 @@ export default function (pi: ExtensionAPI) {
   // ── /permissions command ──
   pi.registerCommand("permissions", {
     description: "Show or set the permission level (1-5)",
+    getArgumentCompletions: (prefix: string) => {
+      const items = [
+        { value: "1", label: "Ask Permissions", description: "Prompt before every write, bash, and unknown tool call" },
+        { value: "2", label: "Accept Edits", description: "Auto-approve file edits within project; prompt for bash and external paths" },
+        { value: "3", label: "Plan Mode", description: "Read-only — blocks all writes and bash commands" },
+        { value: "4", label: "Auto Mode", description: "Auto-approve most tools; bash commands classified by risk" },
+        { value: "5", label: "Bypass", description: "All tools auto-approved without prompts ⚠️" },
+      ];
+      const filtered = items.filter((i) => i.value.startsWith(prefix));
+      return filtered.length > 0 ? filtered : null;
+    },
     handler: async (args, ctx) => {
       if (!ctx.hasUI) return;
 
