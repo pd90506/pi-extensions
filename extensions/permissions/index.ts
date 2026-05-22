@@ -29,9 +29,6 @@ const DEFAULT_LEVEL: PermissionLevel = 1;
 
 const READ_TOOLS = new Set(["read", "web_search", "fetch_content", "code_search"]);
 
-// Tools that the classifier itself may trigger — bypass permissions to avoid recursion
-const CLASSIFIER_BYPASS_TOOLS = new Set(["classify_bash"]);
-
 function isPathInsideCwd(cwd: string, toolPath: string): boolean {
   const resolved = resolve(cwd, toolPath.startsWith("@") ? toolPath.slice(1) : toolPath);
   const normalized = resolved.endsWith("/") ? resolved : resolved + "/";
