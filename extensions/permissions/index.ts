@@ -5,9 +5,13 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   classifyBashCommandLocal,
+  classifyWithTranscript,
   isReadOnlyBash,
   type ClassificationResult,
+  type TranscriptClassifierResult,
 } from "./classifier";
+import { buildClassifierTranscript } from "./transcript";
+import { buildStage1Prompt, buildStage2Prompt } from "./prompts";
 
 type PermissionLevel = 1 | 2 | 3 | 4 | 5;
 
@@ -29,38 +33,15 @@ const LEVEL_STATUS: Record<PermissionLevel, string> = {
 
 const DEFAULT_LEVEL: PermissionLevel = 1;
 
-const READ_TOOLS = new Set(["read", "web_search", "fetch_content", "code_search"]);
+const MAX_CONSECUTIVE_DENIES = 3;
+const MAX_TOTAL_DENIES = 20;
 
-// ── Prompt for LLM-based bash classification ──
-const CLASSIFICATION_PROMPT = `You are a bash command safety classifier. Analyze the following command and classify its risk level.
-
-Risk levels:
-- low: Safe/read-only operations (ls, cat, echo, grep, find, git status/diff/log, npm test, cargo build, standard build commands)
-- medium: Potentially destructive but recoverable (git commit/push, npm install, pip install, file moves/renames, docker commands)
-- high: Destructive or dangerous (rm -rf, sudo, curl | bash, chmod 777, git push --force, database drops, kill, shutdown)
-
-Respond with ONLY a JSON object: {"risk": "low"|"medium"|"high", "reason": "brief explanation"}`;
-
-function parseClassification(text: string): ClassificationResult {
-  try {
-    const parsed = JSON.parse(text.trim());
-    const risk = parsed.risk;
-    if (risk === "low" || risk === "medium" || risk === "high") {
-      return { risk, reason: parsed.reason ?? "No reason provided" };
-    }
-  } catch { /* fall through */ }
-  const jsonMatch = text.match(/\{(?:[^{}]|\{[^{}]*\})*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      const risk = parsed.risk;
-      if (risk === "low" || risk === "medium" || risk === "high") {
-        return { risk, reason: parsed.reason ?? "No reason provided" };
-      }
-    } catch { /* fall through */ }
-  }
-  return { risk: "high", reason: "Failed to parse classifier response" };
+interface DenyTracker {
+  consecutive: number;
+  total: number;
 }
+
+const READ_TOOLS = new Set(["read", "web_search", "fetch_content", "code_search"]);
 
 function isTmpPath(toolPath: string): boolean {
   const raw = toolPath.startsWith("@") ? toolPath.slice(1) : toolPath;
@@ -83,6 +64,7 @@ function isPathInsideCwd(cwd: string, toolPath: string): boolean {
 
 export default function (pi: ExtensionAPI) {
   let currentLevel: PermissionLevel = DEFAULT_LEVEL;
+  let denyTracker: DenyTracker = { consecutive: 0, total: 0 };
 
   // ── State persistence ──
   pi.on("session_start", async (_event, ctx) => {
@@ -99,6 +81,23 @@ export default function (pi: ExtensionAPI) {
           data.level <= 5
         ) {
           currentLevel = data.level as PermissionLevel;
+        }
+      }
+    }
+
+    // Restore deny tracker
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (
+        entry.type === "custom" &&
+        entry.customType === "permissions-deny-tracker"
+      ) {
+        const data = entry.data as DenyTracker | undefined;
+        if (
+          data &&
+          typeof data.consecutive === "number" &&
+          typeof data.total === "number"
+        ) {
+          denyTracker = data;
         }
       }
     }
@@ -126,6 +125,24 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("permissions", `⚠️ ${label}`);
     } else {
       ctx.ui.setStatus("permissions", label);
+    }
+  }
+
+  function persistDenyTracker() {
+    pi.appendEntry("permissions-deny-tracker", denyTracker);
+  }
+
+  function isDenyThresholdExceeded(): boolean {
+    return (
+      denyTracker.consecutive >= MAX_CONSECUTIVE_DENIES ||
+      denyTracker.total >= MAX_TOTAL_DENIES
+    );
+  }
+
+  function resetConsecutiveDenies() {
+    if (denyTracker.consecutive > 0) {
+      denyTracker.consecutive = 0;
+      persistDenyTracker();
     }
   }
 
