@@ -1,11 +1,12 @@
 // extensions/permissions/index.ts
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "@earendil-works/pi-ai";
+import { Type, complete } from "@earendil-works/pi-ai";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  classifyBashCommand,
-  type ClassifierConfig,
+  classifyBashCommandLocal,
+  isReadOnlyBash,
+  type ClassificationResult,
 } from "./classifier";
 
 type PermissionLevel = 1 | 2 | 3 | 4 | 5;
@@ -30,10 +31,45 @@ const DEFAULT_LEVEL: PermissionLevel = 1;
 
 const READ_TOOLS = new Set(["read", "web_search", "fetch_content", "code_search"]);
 
+// ── Prompt for LLM-based bash classification ──
+const CLASSIFICATION_PROMPT = `You are a bash command safety classifier. Analyze the following command and classify its risk level.
+
+Risk levels:
+- low: Safe/read-only operations (ls, cat, echo, grep, find, git status/diff/log, npm test, cargo build, standard build commands)
+- medium: Potentially destructive but recoverable (git commit/push, npm install, pip install, file moves/renames, docker commands)
+- high: Destructive or dangerous (rm -rf, sudo, curl | bash, chmod 777, git push --force, database drops, kill, shutdown)
+
+Respond with ONLY a JSON object: {"risk": "low"|"medium"|"high", "reason": "brief explanation"}`;
+
+function parseClassification(text: string): ClassificationResult {
+  try {
+    const parsed = JSON.parse(text.trim());
+    const risk = parsed.risk;
+    if (risk === "low" || risk === "medium" || risk === "high") {
+      return { risk, reason: parsed.reason ?? "No reason provided" };
+    }
+  } catch { /* fall through */ }
+  const jsonMatch = text.match(/\{(?:[^{}]|\{[^{}]*\})*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const risk = parsed.risk;
+      if (risk === "low" || risk === "medium" || risk === "high") {
+        return { risk, reason: parsed.reason ?? "No reason provided" };
+      }
+    } catch { /* fall through */ }
+  }
+  return { risk: "high", reason: "Failed to parse classifier response" };
+}
+
+function isTmpPath(toolPath: string): boolean {
+  const raw = toolPath.startsWith("@") ? toolPath.slice(1) : toolPath;
+  return raw === "/tmp" || raw.startsWith("/tmp/");
+}
+
 function isPathInsideCwd(cwd: string, toolPath: string): boolean {
   const raw = toolPath.startsWith("@") ? toolPath.slice(1) : toolPath;
   const resolved = resolve(cwd, raw);
-  // Resolve symlinks for existing files; fall back to resolved path for new files
   let real: string;
   try {
     real = realpathSync(resolved);
@@ -68,7 +104,6 @@ export default function (pi: ExtensionAPI) {
     }
     updateStatus(ctx);
 
-    // Restore warning widget if level 5
     if (currentLevel === 5) {
       ctx.ui.setWidget("permissions-warning", [
         "⚠️ BYPASS MODE — All tool calls auto-approved without confirmation",
@@ -117,7 +152,6 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // Show current level
       const levelName = LEVEL_NAMES[currentLevel];
       const desc = getLevelDescription(currentLevel);
       ctx.ui.notify(
@@ -139,7 +173,6 @@ export default function (pi: ExtensionAPI) {
 
   async function activateLevel(level: PermissionLevel, ctx: ExtensionContext) {
     if (level === 5) {
-      // Double-confirm for bypass
       const first = await ctx.ui.confirm(
         "Bypass ALL permissions?",
         "This allows ANY tool call without confirmation. Are you sure?",
@@ -164,7 +197,6 @@ export default function (pi: ExtensionAPI) {
       level === 5 ? "warning" : "info",
     );
 
-    // Warning widget for level 5
     if (level === 5) {
       ctx.ui.setWidget("permissions-warning", [
         "⚠️ BYPASS MODE — All tool calls auto-approved without confirmation",
@@ -174,7 +206,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // ── set_permissions tool — LLM can request level change ──
+  // ── set_permissions tool ──
   pi.registerTool({
     name: "set_permissions",
     label: "Set Permissions",
@@ -194,36 +226,21 @@ export default function (pi: ExtensionAPI) {
       const level = params.level;
       if (level < 1 || level > 5 || !Number.isInteger(level)) {
         return {
-          content: [
-            {
-              type: "text",
-              text: `Invalid level: ${level}. Must be an integer 1-5.`,
-            },
-          ],
+          content: [{ type: "text", text: `Invalid level: ${level}. Must be an integer 1-5.` }],
           details: {},
         };
       }
 
       if (level === currentLevel) {
         return {
-          content: [
-            {
-              type: "text",
-              text: `Already at Level ${level} — ${LEVEL_NAMES[level as PermissionLevel]}.`,
-            },
-          ],
+          content: [{ type: "text", text: `Already at Level ${level} — ${LEVEL_NAMES[level as PermissionLevel]}.` }],
           details: {},
         };
       }
 
       if (!ctx.hasUI) {
         return {
-          content: [
-            {
-              type: "text",
-              text: `Cannot change permissions in non-interactive mode.`,
-            },
-          ],
+          content: [{ type: "text", text: `Cannot change permissions in non-interactive mode.` }],
           details: {},
         };
       }
@@ -238,23 +255,13 @@ export default function (pi: ExtensionAPI) {
       if (approved) {
         await activateLevel(level as PermissionLevel, ctx);
         return {
-          content: [
-            {
-              type: "text",
-              text: `Permission level set to ${level} — ${targetName}.`,
-            },
-          ],
+          content: [{ type: "text", text: `Permission level set to ${level} — ${targetName}.` }],
           details: { level },
         };
       }
 
       return {
-        content: [
-          {
-            type: "text",
-            text: `Permission level change to ${level} was declined by user.`,
-          },
-        ],
+        content: [{ type: "text", text: `Permission level change to ${level} was declined by user.` }],
         details: {},
       };
     },
@@ -264,7 +271,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     const toolName = event.toolName;
 
-    // Build the decision based on current level
     const decision = getDecision(toolName, event.input, ctx.cwd);
 
     if (decision.action === "allow") return undefined;
@@ -273,7 +279,6 @@ export default function (pi: ExtensionAPI) {
       return { block: true, reason: decision.reason };
     }
 
-    // decision.action === "prompt"
     if (!ctx.hasUI) {
       return { block: true, reason: `Blocked in non-interactive mode: ${decision.reason}` };
     }
@@ -296,24 +301,27 @@ export default function (pi: ExtensionAPI) {
     input: Record<string, unknown>,
     cwd: string,
   ): Decision {
-    // Shared baseline: read tools always allowed
     if (READ_TOOLS.has(toolName)) return { action: "allow" };
 
     switch (currentLevel) {
-      case 1: return getLevel1Decision(toolName);
+      case 1: return getLevel1Decision(toolName, input);
       case 2: return getLevel2Decision(toolName, input, cwd);
-      case 3: return getLevel3Decision(toolName);
+      case 3: return getLevel3Decision(toolName, input);
       case 4: return getLevel4Decision(toolName);
       case 5: return { action: "allow" };
       default: return { action: "prompt", reason: "Unknown permission level" };
     }
   }
 
-  function getLevel1Decision(toolName: string): Decision {
+  function getLevel1Decision(toolName: string, input?: Record<string, unknown>): Decision {
     if (toolName === "edit" || toolName === "write") {
       return { action: "prompt", reason: "Write operation needs approval (Ask Permissions)" };
     }
     if (toolName === "bash") {
+      const cmd = input?.command as string | undefined;
+      if (cmd && isReadOnlyBash(cmd)) {
+        return { action: "allow" };
+      }
       return { action: "prompt", reason: "Bash command needs approval (Ask Permissions)" };
     }
     return { action: "prompt", reason: `"${toolName}" needs approval (Ask Permissions)` };
@@ -326,7 +334,7 @@ export default function (pi: ExtensionAPI) {
   ): Decision {
     if (toolName === "edit" || toolName === "write") {
       const path = input.path as string | undefined;
-      if (path && isPathInsideCwd(cwd, path)) {
+      if (path && (isPathInsideCwd(cwd, path) || isTmpPath(path))) {
         return { action: "allow" };
       }
       return {
@@ -335,16 +343,24 @@ export default function (pi: ExtensionAPI) {
       };
     }
     if (toolName === "bash") {
+      const cmd = input.command as string | undefined;
+      if (cmd && isReadOnlyBash(cmd)) {
+        return { action: "allow" };
+      }
       return { action: "prompt", reason: "Bash command needs approval (Accept Edits)" };
     }
     return { action: "prompt", reason: `"${toolName}" needs approval (Accept Edits)` };
   }
 
-  function getLevel3Decision(toolName: string): Decision {
+  function getLevel3Decision(toolName: string, input?: Record<string, unknown>): Decision {
     if (toolName === "edit" || toolName === "write") {
       return { action: "block", reason: "Plan mode — switch to Accept Edits or higher to make changes" };
     }
     if (toolName === "bash") {
+      const cmd = input?.command as string | undefined;
+      if (cmd && isReadOnlyBash(cmd)) {
+        return { action: "allow" };
+      }
       return { action: "block", reason: "Plan mode — switch to Accept Edits or higher to run commands" };
     }
     return { action: "prompt", reason: `"${toolName}" needs approval (Plan Mode)` };
@@ -363,7 +379,6 @@ export default function (pi: ExtensionAPI) {
     decision: Decision & { action: "prompt" },
     ctx: ExtensionContext,
   ): Promise<boolean> {
-    // Level 4 bash classification
     if (toolName === "bash" && decision.needsClassification) {
       return classifyThenPrompt(input, ctx);
     }
@@ -387,58 +402,75 @@ export default function (pi: ExtensionAPI) {
   ): Promise<boolean> {
     const command = input.command as string;
 
+    // 1. Local heuristic classifier (instant, always available)
+    const local = classifyBashCommandLocal(command);
+
+    if (local.risk === "low") return true;
+
+    if (local.risk === "high") {
+      const choice = await ctx.ui.select(
+        `⚠️ bash (Auto Mode — 🔴 HIGH risk)\n\n  ${command}\n\n  Reason: ${local.reason}\n\nAllow?`,
+        ["Yes", "No"],
+      );
+      return choice === "Yes";
+    }
+
+    // 2. Medium risk — refine with LLM using current main model
     try {
-      const config = getClassifierConfig(ctx);
-      if (!config) {
-        const choice = await ctx.ui.select(
-          `⚠️ bash (Auto Mode — classifier unavailable)\n\n  ${command}\n\nAllow?`,
-          ["Yes", "No"],
-        );
-        return choice === "Yes";
+      const model = ctx.model;
+      if (model) {
+        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+        if (auth.ok && auth.apiKey) {
+          const response = await complete(
+            model,
+            {
+              messages: [
+                {
+                  role: "user",
+                  content: [
+                    {
+                      type: "text",
+                      text: `${CLASSIFICATION_PROMPT}\n\nCommand: ${command}\nWorking directory: ${ctx.cwd}`,
+                    },
+                  ],
+                  timestamp: Date.now(),
+                },
+              ],
+            },
+            {
+              apiKey: auth.apiKey,
+              headers: auth.headers,
+              maxTokens: 256,
+              signal: ctx.signal,
+            },
+          );
+
+          const text = response.content
+            .filter((c): c is { type: "text"; text: string } => c.type === "text")
+            .map((c) => c.text)
+            .join("\n");
+
+          if (text.trim()) {
+            const llm = parseClassification(text);
+            if (llm.risk === "low") return true;
+            const riskLabel = llm.risk === "high" ? "🔴 HIGH" : "🟡 MEDIUM";
+            const choice = await ctx.ui.select(
+              `⚠️ bash (Auto Mode — ${riskLabel} risk)\n\n  ${command}\n\n  Reason: ${llm.reason}\n\nAllow?`,
+              ["Yes", "No"],
+            );
+            return choice === "Yes";
+          }
+        }
       }
-
-      const result = await classifyBashCommand(command, ctx.cwd, config, ctx.signal);
-
-      if (result.risk === "low") {
-        return true;
-      }
-
-      const riskLabel = result.risk === "high" ? "🔴 HIGH" : "🟡 MEDIUM";
-      const choice = await ctx.ui.select(
-        `⚠️ bash (Auto Mode — ${riskLabel} risk)\n\n  ${command}\n\n  Reason: ${result.reason}\n\nAllow?`,
-        ["Yes", "No"],
-      );
-      return choice === "Yes";
     } catch {
-      const choice = await ctx.ui.select(
-        `⚠️ bash (Auto Mode — classification failed)\n\n  ${command}\n\nAllow?`,
-        ["Yes", "No"],
-      );
-      return choice === "Yes";
-    }
-  }
-
-  function getClassifierConfig(_ctx: ExtensionContext): ClassifierConfig | null {
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
-    if (anthropicKey) {
-      return {
-        baseUrl: "https://api.anthropic.com",
-        apiKey: anthropicKey,
-        model: "claude-haiku-3-5-20241022",
-        api: "anthropic-messages",
-      };
+      // LLM call failed — fall through to prompt
     }
 
-    const openaiKey = process.env.OPENAI_API_KEY;
-    if (openaiKey) {
-      return {
-        baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com",
-        apiKey: openaiKey,
-        model: "gpt-4o-mini",
-        api: "openai-completions",
-      };
-    }
-
-    return null;
+    // 3. Fallback: prompt user with local heuristic result
+    const choice = await ctx.ui.select(
+      `⚠️ bash (Auto Mode — 🟡 MEDIUM risk)\n\n  ${command}\n\n  Reason: ${local.reason}\n\nAllow?`,
+      ["Yes", "No"],
+    );
+    return choice === "Yes";
   }
 }

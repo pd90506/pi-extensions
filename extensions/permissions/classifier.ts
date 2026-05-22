@@ -7,129 +7,73 @@ export interface ClassificationResult {
   reason: string;
 }
 
-export interface ClassifierConfig {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  api: "anthropic-messages" | "openai-completions";
+// ── Read-only bash command patterns ──
+const READ_ONLY_BASH_PATTERNS = [
+  /^(cat|head|tail|less|more|zcat|bzcat|zless)\s/i,
+  /^(ls|dir|tree|exa|eza)\s/i,
+  /^(grep|egrep|fgrep|rg|ag|ack)\s/i,
+  /^(find|locate|fd)\s/i,
+  /^(wc|file|stat|du|df|md5sum|sha\ds+um|cksum|xxd|od|hexdump)\s/i,
+  /^(which|type|whereis|where|command\s+-v)\s/i,
+  /^(pwd|echo|printf)\s/i,
+  /^(whoami|id|groups|users|last|w)\s/i,
+  /^(uname|hostname|date|uptime|arch)\s/i,
+  /^(env|printenv|tty)\s/i,
+  /^(readlink|realpath|dirname|basename)\s/i,
+  /^(sort|uniq|cut|tr|sed\s+-n|awk|column|fmt|nl)\s/i,
+  /^git\s+(status|diff|log|show|branch|tag|stash\s+list|remote\s+-v|rev-parse|ls-files|ls-tree|rev-list|describe|shortlog)/i,
+  /^(npm|yarn|pnpm|bun)\s+(list|ls|outdated|view|info|why|explain)\b/i,
+  /^docker\s+(ps|images|info|inspect|logs|stats|version)\b/i,
+  /^(kubectl|k)\s+(get|describe|logs|top|explain|api-resources|api-versions|cluster-info)\b/i,
+  /^(man|info|help|apropos|whatis)\s/i,
+];
+
+// ── High-risk (destructive) bash command patterns ──
+const HIGH_RISK_PATTERNS = [
+  /\brm\s+(-[^ ]*[rf][^ ]*|--recursive|--force)/i,
+  /\bsudo\b/i,
+  /\b(chmod|chown)\b.*(777|o\+w|a\+w)/i,
+  /\bcurl\b.*\|.*\b(ba)?sh\b/i,
+  /\bwget\b.*\|.*\b(ba)?sh\b/i,
+  /\bgit\s+push\s+.*(-f|--force)/i,
+  /\bgit\s+reset\s+--hard/i,
+  /\b(drop|truncate|delete)\s+(database|table)/i,
+  /\b(kill|pkill|killall|skill)\b/i,
+  /\b(shutdown|reboot|halt|poweroff|init\s+[06])\b/i,
+  /\bdd\s+if=/i,
+  /\bmkfs\.\w+/i,
+  /\bchroot\b/i,
+  /\bmount\b.*\bremount/i,
+  /\biptables\b/i,
+  /\bnft\b/i,
+  /\beval\b/i,
+  /\bsource\s+.*\bcurl\b/i,
+  /\bsh\s+-c\s+["'].*curl/i,
+  /^>\s*\/dev\//i,
+];
+
+/** Check if a bash command is read-only (no side effects). */
+export function isReadOnlyBash(command: string): boolean {
+  const trimmed = command.trim();
+  // Disallow anything with output redirection (could write files)
+  if (/\d*>[>&]?\s*\S/.test(trimmed)) return false;
+  return READ_ONLY_BASH_PATTERNS.some((p) => p.test(trimmed));
 }
 
-const CLASSIFICATION_PROMPT = `You are a bash command safety classifier. Analyze the following command and classify its risk level.
+/**
+ * Local heuristic classifier — no API key needed.
+ * Checks patterns: high-risk → high, low-risk → low, otherwise medium.
+ */
+export function classifyBashCommandLocal(command: string): ClassificationResult {
+  const trimmed = command.trim();
 
-Risk levels:
-- low: Safe/read-only operations (ls, cat, echo, grep, find, git status/diff/log, npm test, cargo build, standard build commands)
-- medium: Potentially destructive but recoverable (git commit/push, npm install, pip install, file moves/renames, docker commands)
-- high: Destructive or dangerous (rm -rf, sudo, curl | bash, chmod 777, git push --force, database drops, kill, shutdown)
-
-Respond with ONLY a JSON object: {"risk": "low"|"medium"|"high", "reason": "brief explanation"}`;
-
-export async function classifyBashCommand(
-  command: string,
-  cwd: string,
-  config: ClassifierConfig,
-  signal?: AbortSignal,
-): Promise<ClassificationResult> {
-  if (config.api === "anthropic-messages") {
-    return classifyAnthropic(command, cwd, config, signal);
-  }
-  return classifyOpenAI(command, cwd, config, signal);
-}
-
-async function classifyAnthropic(
-  command: string,
-  cwd: string,
-  config: ClassifierConfig,
-  signal?: AbortSignal,
-): Promise<ClassificationResult> {
-  const response = await fetch(`${config.baseUrl}/v1/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": config.apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: 256,
-      messages: [
-        { role: "user", content: `${CLASSIFICATION_PROMPT}\n\nCommand: ${command}\nWorking directory: ${cwd}` },
-      ],
-    }),
-    signal,
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Classification API error ${response.status}: ${body}`);
+  if (HIGH_RISK_PATTERNS.some((p) => p.test(trimmed))) {
+    return { risk: "high", reason: "Destructive command pattern detected" };
   }
 
-  const data = (await response.json()) as {
-    content: Array<{ type: string; text: string }>;
-  };
-  const text = data.content.find((c) => c.type === "text")?.text ?? "";
-  return parseClassification(text);
-}
-
-async function classifyOpenAI(
-  command: string,
-  cwd: string,
-  config: ClassifierConfig,
-  signal?: AbortSignal,
-): Promise<ClassificationResult> {
-  const response = await fetch(`${config.baseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: 256,
-      temperature: 0,
-      messages: [
-        { role: "user", content: `${CLASSIFICATION_PROMPT}\n\nCommand: ${command}\nWorking directory: ${cwd}` },
-      ],
-    }),
-    signal,
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Classification API error ${response.status}: ${body}`);
+  if (isReadOnlyBash(trimmed)) {
+    return { risk: "low", reason: "Read-only command" };
   }
 
-  const data = (await response.json()) as {
-    choices: Array<{ message: { content: string } }>;
-  };
-  const text = data.choices[0]?.message?.content ?? "";
-  return parseClassification(text);
-}
-
-function parseClassification(text: string): ClassificationResult {
-  // Try parsing the full response as JSON first (handles nested braces in reason)
-  try {
-    const parsed = JSON.parse(text.trim());
-    const risk = parsed.risk as RiskLevel;
-    if (risk === "low" || risk === "medium" || risk === "high") {
-      return { risk, reason: parsed.reason ?? "No reason provided" };
-    }
-  } catch {
-    // Not valid JSON — try regex extraction as fallback
-  }
-
-  // Fallback: regex extraction (fragile, only used when full parse fails)
-  const jsonMatch = text.match(/\{(?:[^{}]|\{[^{}]*\})*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      const risk = parsed.risk as RiskLevel;
-      if (risk === "low" || risk === "medium" || risk === "high") {
-        return { risk, reason: parsed.reason ?? "No reason provided" };
-      }
-    } catch {
-      // fall through to fallback
-    }
-  }
-  // Fallback: treat as high risk if parsing fails
-  return { risk: "high", reason: "Failed to parse classifier response" };
+  return { risk: "medium", reason: "Potentially state-modifying command" };
 }
