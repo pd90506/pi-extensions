@@ -13,10 +13,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const packageRoot = path.resolve(__dirname, "..");
+// Use jiti-provided CJS __dirname instead of import.meta.url
+// which may not be available in Pi's extension loading context.
+const extDir = __dirname;
+const packageRoot = path.resolve(extDir, "..");
 const superpowersDir = path.join(packageRoot, "superpowers");
 const skillsDir = path.join(superpowersDir, "skills");
 
@@ -138,6 +139,7 @@ ${subagentNote}
   // ── Session lifecycle ───────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
+    console.log("[superpowers-bootstrap] session_start fired");
     checkSubagents();
 
     ctx.ui.notify(
