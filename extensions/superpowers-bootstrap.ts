@@ -2,9 +2,10 @@
  * Superpowers Bootstrap — Pi Extension Compatibility Layer
  *
  * Bridges superpowers skills into Pi:
- * 1. Injects using-superpowers bootstrap + Pi tool mapping into every session
+ * 1. Injects using-superpowers bootstrap + Pi tool mapping on first turn
  * 2. Detects pi-subagents availability and warns if missing
  * 3. Reads VERSION file for version tracking
+ * 4. Deduplicates injection across reload, resume, fork, tree navigation
  *
  * Mirrors what OpenCode's messages.transform and Claude Code's SessionStart
  * hook do, but using Pi's extension API.
@@ -13,12 +14,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-// Resolve package root: try jiti __dirname, fall back to import.meta.url
+// Resolve package root. Uses jiti-provided __dirname (CJS compat),
+// with import.meta.url fallback for ESM environments.
 let extDir: string;
 try {
-  extDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
+  extDir = typeof __dirname !== "undefined"
+    ? __dirname
+    : path.dirname(new URL(import.meta.url).pathname);
 } catch {
   extDir = path.resolve(".");
 }
@@ -26,7 +29,7 @@ const packageRoot = path.resolve(extDir, "..");
 const superpowersDir = path.join(packageRoot, "superpowers");
 const skillsDir = path.join(superpowersDir, "skills");
 
-// ── Read version ──────────────────────────────────────────────────────────
+// ── File utilities ────────────────────────────────────────────────────────
 
 function readVersion(): string {
   try {
@@ -36,14 +39,10 @@ function readVersion(): string {
   }
 }
 
-// ── Strip YAML frontmatter ────────────────────────────────────────────────
-
 function stripFrontmatter(content: string): string {
   const match = content.match(/^---\n[\s\S]*?\n---\n/);
   return match ? content.slice(match[0].length) : content;
 }
-
-// ── Read file, return empty on failure ────────────────────────────────────
 
 function readIfExists(filePath: string): string {
   try {
@@ -53,16 +52,9 @@ function readIfExists(filePath: string): string {
   }
 }
 
-export default function (pi: ExtensionAPI) {
-  const version = readVersion();
+// ── Tool mapping ──────────────────────────────────────────────────────────
 
-  // Read bootstrap content
-  const usingSuperpowersContent = stripFrontmatter(
-    readIfExists(path.join(skillsDir, "using-superpowers", "SKILL.md")),
-  );
-
-  // Pi tool mapping (upstream removed pi-tools.md, we maintain it here)
-  const piToolMapping = `
+const PI_TOOL_MAPPING = `
 | Skill references | Pi equivalent |
 |-----------------|---------------|
 | \`Skill\` tool (invoke a skill) | \`read\` to load \`skills/<skill-name>/SKILL.md\`, or \`/skill:name\` |
@@ -76,9 +68,9 @@ export default function (pi: ExtensionAPI) {
 | \`WebSearch\` | \`web_search\` |
 | \`WebFetch\` | \`fetch_content\` |
 | \`TodoWrite\` (task tracking) | Use \`write\` to create a task file, or maintain a mental checklist |
-| \`EnterPlanMode\` / \`ExitPlanMode\` | No built-in equivalent |
+| \`EnterPlanMode\` / \`ExitPlanMode\` | No built-in Pi equivalent |
 
-### Additional Pi Tools
+### Additional Pi-Only Tools
 | Tool | Purpose |
 |------|---------|
 | \`code_search\` | Search for code examples and API docs |
@@ -86,12 +78,19 @@ export default function (pi: ExtensionAPI) {
 | \`analyze_image\` | Targeted image analysis |
 
 ### Subagent Support
-Pi supports subagents via the \`subagent\` tool (requires \`pi-subagents\`).
 Install: \`pi install npm:pi-subagents\`.
-
 When a skill says "dispatch a subagent" → use \`subagent\`.
 When a skill says "dispatch in parallel" → use parallel mode of \`subagent\`.
 `;
+
+// ── Extension ─────────────────────────────────────────────────────────────
+
+export default function (pi: ExtensionAPI) {
+  const version = readVersion();
+
+  const usingSuperpowersContent = stripFrontmatter(
+    readIfExists(path.join(skillsDir, "using-superpowers", "SKILL.md")),
+  );
 
   // ── Detect pi-subagents ─────────────────────────────────────────────────
 
@@ -99,21 +98,21 @@ When a skill says "dispatch in parallel" → use parallel mode of \`subagent\`.
 
   function checkSubagents(): boolean {
     try {
-      const tools = pi.getAllTools();
-      hasSubagents = tools.some((t) => t.name === "subagent");
+      hasSubagents = pi.getAllTools().some((t) => t.name === "subagent");
     } catch {
-      // getAllTools may not be ready yet; retry on session_start
+      // May not be ready during module load; retried on session_start
     }
     return hasSubagents;
   }
 
-  // ── Helpers ─────────────────────────────────────────────────────────────
+  // ── Bootstrap injection guard ───────────────────────────────────────────
 
-  function hasBootstrapInSession(ctx: { sessionManager?: { getEntries?: () => Array<{ customType?: string }> } }): boolean {
+  type SessionCtx = { sessionManager?: { getEntries?: () => Array<{ customType?: string }> } };
+
+  function hasBootstrapInSession(ctx: SessionCtx): boolean {
     try {
       const entries = ctx.sessionManager?.getEntries?.();
-      if (!entries) return false;
-      return entries.some((e) => e.customType === "superpowers-bootstrap");
+      return entries?.some((e) => e.customType === "superpowers-bootstrap") ?? false;
     } catch {
       return false;
     }
@@ -122,7 +121,7 @@ When a skill says "dispatch in parallel" → use parallel mode of \`subagent\`.
   function buildBootstrapMessage(): string {
     const subagentNote = hasSubagents
       ? "pi-subagents is available. Use the `subagent` tool when skills ask to dispatch tasks."
-      : "⚠️ pi-subagents is NOT installed. Skills that dispatch subagents (dispatching-parallel-agents, subagent-driven-development, executing-plans) will not work.\nTell the user to run: pi install npm:pi-subagents";
+      : "⚠️ pi-subagents is NOT installed. Skills that require subagents (dispatching-parallel-agents, subagent-driven-development, executing-plans) will not work.\nTell the user to run: pi install npm:pi-subagents";
 
     return `<EXTREMELY_IMPORTANT>
 You have superpowers (${version}).
@@ -133,7 +132,7 @@ ${usingSuperpowersContent}
 
 Skills are written for Claude Code tool names. Always translate to Pi equivalents:
 
-${piToolMapping}
+${PI_TOOL_MAPPING}
 
 ## Status
 
@@ -141,16 +140,12 @@ ${subagentNote}
 </EXTREMELY_IMPORTANT>`;
   }
 
-  // ── Session lifecycle ───────────────────────────────────────────────────
+  // ── Event handlers ──────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
-    console.log("[superpowers-bootstrap] session_start fired");
     checkSubagents();
 
-    ctx.ui.notify(
-      `Superpowers ${version} · 14 skills loaded`,
-      "info",
-    );
+    ctx.ui.notify(`Superpowers ${version} · 14 skills loaded`, "info");
 
     if (!hasSubagents) {
       ctx.ui.notify(
@@ -160,11 +155,7 @@ ${subagentNote}
     }
   });
 
-  // ── Inject bootstrap (once per session, survives reload/resume) ─────────
-
   pi.on("before_agent_start", async (_event, ctx) => {
-    // Check if bootstrap already exists in session history
-    // This prevents duplicates on reload, resume, fork, and tree navigation
     if (hasBootstrapInSession(ctx)) return;
 
     return {
@@ -176,15 +167,13 @@ ${subagentNote}
     };
   });
 
-  // ── Context: deduplicate bootstrap across session tree nav ──────────────
-
   pi.on("context", async (event) => {
     let seen = false;
     return {
       messages: event.messages.filter((m) => {
         const msg = m as { customType?: string };
         if (msg.customType === "superpowers-bootstrap") {
-          if (seen) return false; // Drop duplicates
+          if (seen) return false;
           seen = true;
         }
         return true;
