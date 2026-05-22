@@ -163,27 +163,6 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // ── Shift+Tab shortcut — cycle permission levels ──
-  pi.registerShortcut("shift+tab", {
-    description: "Cycle permission level",
-    handler: async (ctx) => {
-      if (!ctx.hasUI) return;
-
-      const options = ([1, 2, 3, 4, 5] as PermissionLevel[]).map((l) => {
-        const marker = l === currentLevel ? " ✓" : "";
-        return `${LEVEL_STATUS[l]} — ${LEVEL_NAMES[l]}${marker}`;
-      });
-
-      const choice = await ctx.ui.select("Select permission level:", options);
-      if (choice) {
-        const idx = options.indexOf(choice);
-        if (idx >= 0) {
-          await activateLevel((idx + 1) as PermissionLevel, ctx);
-        }
-      }
-    },
-  });
-
   // ── set_permissions tool — LLM can request level change ──
   pi.registerTool({
     name: "set_permissions",
