@@ -76,6 +76,75 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // ── /permissions command ──
+  pi.registerCommand("permissions", {
+    description: "Show or set the permission level (1-5)",
+    handler: async (args, ctx) => {
+      if (!ctx.hasUI) return;
+
+      const levelNum = parseInt(args?.trim() ?? "", 10);
+      if (levelNum >= 1 && levelNum <= 5) {
+        await activateLevel(levelNum as PermissionLevel, ctx);
+        return;
+      }
+
+      // Show current level
+      const levelName = LEVEL_NAMES[currentLevel];
+      const desc = getLevelDescription(currentLevel);
+      ctx.ui.notify(
+        `Permissions: Level ${currentLevel} — ${levelName}\n${desc}`,
+        "info",
+      );
+    },
+  });
+
+  function getLevelDescription(level: PermissionLevel): string {
+    switch (level) {
+      case 1: return "Prompts before every write, bash, and unknown tool call.";
+      case 2: return "Auto-approves file edits within the project; prompts for bash and external paths.";
+      case 3: return "Read-only. Blocks all writes and bash commands.";
+      case 4: return "Auto-approves most tools. Bash commands are classified by risk.";
+      case 5: return "All tools auto-approved without prompts. ⚠️ USE WITH CAUTION.";
+    }
+  }
+
+  async function activateLevel(level: PermissionLevel, ctx: ExtensionContext) {
+    if (level === 5) {
+      // Double-confirm for bypass
+      const first = await ctx.ui.confirm(
+        "Bypass ALL permissions?",
+        "This allows ANY tool call without confirmation. Are you sure?",
+      );
+      if (!first) {
+        ctx.ui.notify("Bypass cancelled", "info");
+        return;
+      }
+      const second = await ctx.ui.confirm(
+        "⚠️ FINAL WARNING",
+        "Bypass ALL permissions. This allows ANY tool call without confirmation. Proceed?",
+      );
+      if (!second) {
+        ctx.ui.notify("Bypass cancelled", "info");
+        return;
+      }
+    }
+
+    setLevel(level, ctx);
+    ctx.ui.notify(
+      `Permissions set to Level ${level} — ${LEVEL_NAMES[level]}`,
+      level === 5 ? "warning" : "info",
+    );
+
+    // Warning widget for level 5
+    if (level === 5) {
+      ctx.ui.setWidget("permissions-warning", [
+        "⚠️ BYPASS MODE — All tool calls auto-approved without confirmation",
+      ]);
+    } else {
+      ctx.ui.setWidget("permissions-warning", undefined);
+    }
+  }
+
   // ── Tool call interception ──
   pi.on("tool_call", async (event, ctx) => {
     const toolName = event.toolName;
