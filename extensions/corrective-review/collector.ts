@@ -42,7 +42,7 @@ const MAX_DRAFT_LENGTH = 4000;
  * Extract plain text from content that may be a string or an array
  * of TextContent / ImageContent blocks.
  */
-function extractText(
+export function extractText(
   content: string | (TextContent | ImageContent)[],
 ): string {
   if (typeof content === "string") return content;

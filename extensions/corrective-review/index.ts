@@ -6,9 +6,8 @@
 // On FAIL, injects feedback as a steer to trigger re-tooling.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { DEFAULT_CONFIG, type CorrectiveReviewConfig } from "./config.ts";
-import { collectReviewInput } from "./collector.ts";
+import { collectReviewInput, extractText } from "./collector.ts";
 import {
   buildReviewAgentConfig,
   buildReviewTask,
@@ -29,22 +28,6 @@ export default function (pi: ExtensionAPI) {
 
   function checkSubagentAvailable(): boolean {
     return pi.getAllTools().some((t) => t.name === "subagent");
-  }
-
-  // ── Extract assistant message text ───────────────────────────────────
-
-  function getAssistantText(message: {
-    role: string;
-    content: string | Array<{ type: string; text?: string }>;
-  }): string {
-    if (typeof message.content === "string") return message.content;
-    if (Array.isArray(message.content)) {
-      return message.content
-        .filter((c): c is { type: "text"; text: string } => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
-    }
-    return "";
   }
 
   // ── Session lifecycle ────────────────────────────────────────────────
@@ -72,61 +55,33 @@ export default function (pi: ExtensionAPI) {
 
   // ── Review gate at turn_end ──────────────────────────────────────────
 
-  pi.on("turn_end", (event, ctx) => {
-    // Skip if subagent tool not available
-    if (!checkSubagentAvailable()) return;
+  // ── Send a review steer to register the subagent ─────────────────────
 
-    // Skip if no tool calls were made (conversational turns don't need review)
-    if (event.toolResults.length === 0) return;
-
-    // Skip if we've hit max review cycles for this prompt
-    if (reviewCycleCount >= config.maxReviewCycles) {
-      reviewCycleCount = 0;
-      return;
-    }
-
-    // Extract draft response text from the assistant message
-    const draftResponse = getAssistantText(event.message);
-
-    // Collect review inputs from session state + current turn
-    const reviewInput = collectReviewInput(
-      ctx.sessionManager,
-      event.toolResults as ToolResultMessage[],
-      draftResponse,
+  function sendRegistrationSteer(): void {
+    const agentConfig = buildReviewAgentConfig(config);
+    const createPayload = JSON.stringify({
+      action: "create",
+      config: agentConfig,
+    });
+    pi.sendMessage(
+      {
+        customType: "corrective-review-setup",
+        content:
+          `[CORRECTIVE-REVIEW] You MUST call the subagent tool with exactly this payload to register the corrective-reviewer agent:\n${createPayload}`,
+        display: false,
+      },
+      { deliverAs: "steer" },
     );
+  }
 
-    // Increment cycle count
-    reviewCycleCount++;
+  // ── Send a review steer with the collected review task ───────────────
 
-    // Register the review agent on first use (do this before sending the review steer)
-    if (!agentRegistered) {
-      const agentConfig = buildReviewAgentConfig(config);
-      const createPayload = JSON.stringify({
-        action: "create",
-        config: agentConfig,
-      });
-      pi.sendMessage(
-        {
-          customType: "corrective-review-setup",
-          content: `[CORRECTIVE-REVIEW] Register agent: ${createPayload}`,
-          display: false,
-        },
-        { deliverAs: "steer" },
-      );
-      agentRegistered = true;
-    }
-
-    // Build review task
-    const reviewTask = buildReviewTask(reviewInput);
-
-    // Build the subagent invocation payload
+  function sendReviewSteer(reviewTask: string): void {
     const subagentPayload = JSON.stringify({
       agent: REVIEW_AGENT_NAME,
       task: reviewTask,
     });
 
-    // Inject review as a steer message.
-    // The agent will call the subagent tool, parse the result, and decide PASS/FAIL.
     pi.sendMessage(
       {
         customType: "corrective-review",
@@ -143,6 +98,54 @@ export default function (pi: ExtensionAPI) {
       },
       { deliverAs: "steer" },
     );
+  }
+
+  // ── Review gate at turn_end ──────────────────────────────────────────
+
+  pi.on("turn_end", (event, ctx) => {
+    try {
+      // Skip if subagent tool not available
+      if (!checkSubagentAvailable()) return;
+
+      // Skip if no tool calls were made (conversational turns don't need review)
+      if (event.toolResults.length === 0) return;
+
+      // Skip if we've hit max review cycles for this prompt
+      if (reviewCycleCount >= config.maxReviewCycles) {
+        reviewCycleCount = 0;
+        return;
+      }
+
+      // Extract draft response text from the assistant message
+      const draftResponse = extractText(event.message.content);
+
+      // Collect review inputs from session state + current turn
+      const reviewInput = collectReviewInput(
+        ctx.sessionManager,
+        event.toolResults,
+        draftResponse,
+      );
+
+      // Increment cycle count
+      reviewCycleCount++;
+
+      // Register the review agent on first use
+      if (!agentRegistered) {
+        sendRegistrationSteer();
+        agentRegistered = true;
+      }
+
+      // Build review task and inject review steer
+      const reviewTask = buildReviewTask(reviewInput);
+      sendReviewSteer(reviewTask);
+    } catch (err) {
+      // Fail closed: silently skip review on errors to avoid breaking the session.
+      // The agent's response goes through unreviewed.
+      ctx.ui.notify(
+        `corrective-review: review skipped due to error: ${err instanceof Error ? err.message : String(err)}`,
+        "warning",
+      );
+    }
   });
 
   // ── Cleanup ──────────────────────────────────────────────────────────
