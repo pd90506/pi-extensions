@@ -4,7 +4,7 @@ Superpowers is a complete software development methodology for your coding agent
 
 ## Quickstart
 
-Give your agent Superpowers: [Claude Code](#claude-code), [Codex CLI](#codex-cli), [Codex App](#codex-app), [Factory Droid](#factory-droid), [Gemini CLI](#gemini-cli), [OpenCode](#opencode), [Pi](#pi), [Cursor](#cursor), [GitHub Copilot CLI](#github-copilot-cli).
+Give your agent Superpowers: [Claude Code](#claude-code), [Codex CLI](#codex-cli), [Codex App](#codex-app), [Factory Droid](#factory-droid), [Gemini CLI](#gemini-cli), [OpenCode](#opencode), [Cursor](#cursor), [GitHub Copilot CLI](#github-copilot-cli).
 
 ## How it works
 
@@ -126,28 +126,6 @@ already use it in another harness.
   ```
 
 - Detailed docs: [docs/README.opencode.md](docs/README.opencode.md)
-
-### Pi
-
-- Install directly from GitHub:
-
-  ```bash
-  pi install git:github.com/obra/superpowers
-  ```
-
-- Or install from a local path:
-
-  ```bash
-  pi install ./path/to/superpowers
-  ```
-
-- Subagent-based skills (subagent-driven-development, dispatching-parallel-agents) require the `pi-subagents` package:
-
-  ```bash
-  pi install npm:pi-subagents
-  ```
-
-Pi discovers skills automatically from the package's `skills/` directory. Skill descriptions appear in the system prompt at startup, and the `using-superpowers` skill auto-triggers on every session. See `skills/using-superpowers/references/pi-tools.md` for the Pi tool mapping reference.
 
 ### Cursor
 

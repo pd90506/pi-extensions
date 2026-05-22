@@ -1,6 +1,6 @@
 ---
 name: using-superpowers
-description: Use when starting any conversation - establishes how to find and use skills, requiring skill invocation before ANY response including clarifying questions
+description: Use when starting any conversation - establishes how to find and use skills, requiring Skill tool invocation before ANY response including clarifying questions
 ---
 
 <SUBAGENT-STOP>
@@ -19,27 +19,25 @@ This is not negotiable. This is not optional. You cannot rationalize your way ou
 
 Superpowers skills override default system prompt behavior, but **user instructions always take precedence**:
 
-1. **User's explicit instructions** — highest priority
+1. **User's explicit instructions** (CLAUDE.md, GEMINI.md, AGENTS.md, direct requests) — highest priority
 2. **Superpowers skills** — override default system behavior where they conflict
 3. **Default system prompt** — lowest priority
 
-If a user says "don't use TDD" and a skill says "always use TDD," follow the user's instructions. The user is in control.
+If CLAUDE.md, GEMINI.md, or AGENTS.md says "don't use TDD" and a skill says "always use TDD," follow the user's instructions. The user is in control.
 
 ## How to Access Skills
 
-**In Pi:** Pi loads skill metadata into the system prompt at startup. To invoke a skill, use the `read` tool to load `skills/<skill-name>/SKILL.md`. You can also use `/skill:<name>` to force-load a skill.
-
 **In Claude Code:** Use the `Skill` tool. When you invoke a skill, its content is loaded and presented to you—follow it directly. Never use the Read tool on skill files.
 
-**In Copilot CLI:** Use the `skill` tool. Skills are auto-discovered from installed plugins.
+**In Copilot CLI:** Use the `skill` tool. Skills are auto-discovered from installed plugins. The `skill` tool works the same as Claude Code's `Skill` tool.
 
-**In Gemini CLI:** Skills activate via the `activate_skill` tool.
+**In Gemini CLI:** Skills activate via the `activate_skill` tool. Gemini loads skill metadata at session start and activates the full content on demand.
 
 **In other environments:** Check your platform's documentation for how skills are loaded.
 
 ## Platform Adaptation
 
-Skills use Claude Code tool names. Pi users: use `read` to load skill files. Subagent support requires `pi-subagents` package (`pi install npm:pi-subagents`). Other non-CC platforms: see `references/copilot-tools.md` (Copilot CLI), `references/codex-tools.md` (Codex) for tool equivalents. Gemini CLI users get the tool mapping loaded automatically via GEMINI.md.
+Skills use Claude Code tool names. Non-CC platforms: see `references/copilot-tools.md` (Copilot CLI), `references/codex-tools.md` (Codex) for tool equivalents. Gemini CLI users get the tool mapping loaded automatically via GEMINI.md.
 
 # Using Skills
 
@@ -54,10 +52,10 @@ digraph skill_flow {
     "Already brainstormed?" [shape=diamond];
     "Invoke brainstorming skill" [shape=box];
     "Might any skill apply?" [shape=diamond];
-    "Load skill via read or /skill:name" [shape=box];
+    "Invoke Skill tool" [shape=box];
     "Announce: 'Using [skill] to [purpose]'" [shape=box];
     "Has checklist?" [shape=diamond];
-    "Create task checklist" [shape=box];
+    "Create TodoWrite todo per item" [shape=box];
     "Follow skill exactly" [shape=box];
     "Respond (including clarifications)" [shape=doublecircle];
 
@@ -67,13 +65,13 @@ digraph skill_flow {
     "Invoke brainstorming skill" -> "Might any skill apply?";
 
     "User message received" -> "Might any skill apply?";
-    "Might any skill apply?" -> "Load skill via read or /skill:name" [label="yes, even 1%"];
+    "Might any skill apply?" -> "Invoke Skill tool" [label="yes, even 1%"];
     "Might any skill apply?" -> "Respond (including clarifications)" [label="definitely not"];
-    "Load skill via read or /skill:name" -> "Announce: 'Using [skill] to [purpose]'";
+    "Invoke Skill tool" -> "Announce: 'Using [skill] to [purpose]'";
     "Announce: 'Using [skill] to [purpose]'" -> "Has checklist?";
-    "Has checklist?" -> "Create task checklist" [label="yes"];
+    "Has checklist?" -> "Create TodoWrite todo per item" [label="yes"];
     "Has checklist?" -> "Follow skill exactly" [label="no"];
-    "Create task checklist" -> "Follow skill exactly";
+    "Create TodoWrite todo per item" -> "Follow skill exactly";
 }
 ```
 
@@ -101,7 +99,7 @@ These thoughts mean STOP—you're rationalizing:
 When multiple skills could apply, use this order:
 
 1. **Process skills first** (brainstorming, debugging) - these determine HOW to approach the task
-2. **Implementation skills second** (writing-plans, subagent-driven-development, executing-plans, TDD) - these guide execution
+2. **Implementation skills second** (frontend-design, mcp-builder) - these guide execution
 
 "Let's build X" → brainstorming first, then implementation skills.
 "Fix this bug" → debugging first, then domain-specific skills.
