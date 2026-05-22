@@ -77,3 +77,113 @@ export function classifyBashCommandLocal(command: string): ClassificationResult 
 
   return { risk: "medium", reason: "Potentially state-modifying command" };
 }
+
+export interface TranscriptClassifierResult {
+  verdict: "allow" | "block";
+  reason: string;
+}
+
+/**
+ * Two-stage transcript classifier.
+ *
+ * Stage 1: fast filter (max_tokens=64, no thinking).
+ *   Only BLOCK rules. "Err on the side of blocking."
+ *   No <block> tag → ALLOW (stop). <block> emitted → escalate.
+ *
+ * Stage 2: full reasoning (max_tokens=4096, thinking=on).
+ *   Full spec: user intent rules + ALLOW exceptions.
+ *   → final <block> or <allow>.
+ *
+ * Input: classifier transcript (built by transcript.ts) and the current model.
+ * Uses Pi's complete() API — inherits model, auth, and base URL automatically.
+ */
+export async function classifyWithTranscript(
+  transcript: string,
+  command: string,
+  completeFn: typeof import("@earendil-works/pi-ai").complete,
+  model: any,
+  getApiKeyAndHeaders: (model: any) => Promise<{
+    ok: boolean;
+    apiKey?: string;
+    headers?: Record<string, string>;
+    error?: string;
+  }>,
+  buildStage1Prompt: (transcript: string, action: string) => string,
+  buildStage2Prompt: (transcript: string, action: string) => string,
+  signal?: AbortSignal,
+): Promise<TranscriptClassifierResult> {
+  const auth = await getApiKeyAndHeaders(model);
+  if (!auth.ok || !auth.apiKey) {
+    throw new Error(`Classifier auth failed: ${auth.error ?? "no API key"}`);
+  }
+
+  const completeOptions = {
+    apiKey: auth.apiKey,
+    headers: auth.headers ?? {},
+    signal,
+  };
+
+  // ── Stage 1: fast filter ──
+  const stage1Input = buildStage1Prompt(transcript, command);
+  const stage1 = await completeFn(
+    model,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: stage1Input }],
+          timestamp: Date.now(),
+        },
+      ],
+    },
+    { ...completeOptions, maxTokens: 64 },
+  );
+
+  const stage1Text = extractText(stage1.content);
+  if (!stage1Text.includes("<block>")) {
+    return { verdict: "allow", reason: "Passed fast filter" };
+  }
+
+  // ── Stage 2: full reasoning ──
+  const stage2Input = buildStage2Prompt(transcript, command);
+  const stage2 = await completeFn(
+    model,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: stage2Input }],
+          timestamp: Date.now(),
+        },
+      ],
+    },
+    { ...completeOptions, maxTokens: 4096 },
+  );
+
+  const stage2Text = extractText(stage2.content);
+  if (stage2Text.includes("<block>")) {
+    const reason = extractReason(stage2Text);
+    return { verdict: "block", reason };
+  }
+  return { verdict: "allow", reason: "Cleared on review" };
+}
+
+function extractText(content: Array<{ type: string; text?: string }>): string {
+  return content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("\n");
+}
+
+function extractReason(text: string): string {
+  const reasonMatch = text.match(/<reason>([\s\S]*?)<\/reason>/i);
+  if (reasonMatch) return reasonMatch[1].trim();
+
+  const lines = text.split("\n");
+  for (const line of lines) {
+    if (line.includes("<block>")) {
+      return line.replace(/<block>/gi, "").trim() || "Blocked by classifier";
+    }
+  }
+  return "Blocked by classifier";
+}
