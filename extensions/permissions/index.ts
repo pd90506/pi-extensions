@@ -94,7 +94,7 @@ export default function (pi: ExtensionAPI) {
       return { block: true, reason: `Blocked in non-interactive mode: ${decision.reason}` };
     }
 
-    const approved = await promptUser(toolName, event.input, decision.reason, ctx);
+    const approved = await promptUser(toolName, event.input, decision, ctx);
     if (!approved) {
       return { block: true, reason: "Blocked by user" };
     }
@@ -105,7 +105,7 @@ export default function (pi: ExtensionAPI) {
   type Decision =
     | { action: "allow" }
     | { action: "block"; reason: string }
-    | { action: "prompt"; reason: string };
+    | { action: "prompt"; reason: string; needsClassification?: boolean };
 
   function getDecision(
     toolName: string,
@@ -168,7 +168,7 @@ export default function (pi: ExtensionAPI) {
 
   function getLevel4Decision(toolName: string): Decision {
     if (toolName === "bash") {
-      return { action: "prompt", reason: "classify" };
+      return { action: "prompt", reason: "Bash command needs classification (Auto Mode)", needsClassification: true };
     }
     return { action: "allow" };
   }
@@ -176,11 +176,11 @@ export default function (pi: ExtensionAPI) {
   async function promptUser(
     toolName: string,
     input: Record<string, unknown>,
-    reason: string,
+    decision: Decision & { action: "prompt" },
     ctx: ExtensionContext,
   ): Promise<boolean> {
     // Level 4 bash classification
-    if (toolName === "bash" && reason === "classify") {
+    if (toolName === "bash" && decision.needsClassification) {
       return classifyThenPrompt(input, ctx);
     }
 
@@ -191,7 +191,7 @@ export default function (pi: ExtensionAPI) {
         : "";
 
     const choice = await ctx.ui.select(
-      `⚠️ ${toolName} — ${reason}${commandDetail}\n\nAllow?`,
+      `⚠️ ${toolName} — ${decision.reason}${commandDetail}\n\nAllow?`,
       ["Yes", "No"],
     );
     return choice === "Yes";
