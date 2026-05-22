@@ -3,7 +3,7 @@
   "private": true,
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": ["./extensions"],
+    "extensions": ["./extensions/superpowers-bootstrap.ts"],
     "skills": ["./superpowers/skills"]
   }
 }
