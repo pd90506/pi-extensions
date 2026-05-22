@@ -99,11 +99,11 @@ export default function (pi: ExtensionAPI) {
     description: "Show or set the permission level (1-5)",
     getArgumentCompletions: (prefix: string) => {
       const items = [
-        { value: "1", label: "Ask Permissions", description: "Prompt before every write, bash, and unknown tool call" },
-        { value: "2", label: "Accept Edits", description: "Auto-approve file edits within project; prompt for bash and external paths" },
-        { value: "3", label: "Plan Mode", description: "Read-only — blocks all writes and bash commands" },
-        { value: "4", label: "Auto Mode", description: "Auto-approve most tools; bash commands classified by risk" },
-        { value: "5", label: "Bypass", description: "All tools auto-approved without prompts ⚠️" },
+        { value: "1", label: "Ask Permissions — prompt for writes, bash, unknown tools" },
+        { value: "2", label: "Accept Edits — auto-allow file edits in project; prompt for bash" },
+        { value: "3", label: "Plan Mode — read-only, blocks writes and bash" },
+        { value: "4", label: "Auto Mode — auto-allow most tools; classify bash by risk" },
+        { value: "5", label: "Bypass — all tools auto-approved ⚠️" },
       ];
       const filtered = items.filter((i) => i.value.startsWith(prefix));
       return filtered.length > 0 ? filtered : null;
