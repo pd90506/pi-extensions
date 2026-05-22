@@ -1,6 +1,7 @@
 // extensions/permissions/index.ts
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   classifyBashCommand,
@@ -30,8 +31,16 @@ const DEFAULT_LEVEL: PermissionLevel = 1;
 const READ_TOOLS = new Set(["read", "web_search", "fetch_content", "code_search"]);
 
 function isPathInsideCwd(cwd: string, toolPath: string): boolean {
-  const resolved = resolve(cwd, toolPath.startsWith("@") ? toolPath.slice(1) : toolPath);
-  const normalized = resolved.endsWith("/") ? resolved : resolved + "/";
+  const raw = toolPath.startsWith("@") ? toolPath.slice(1) : toolPath;
+  const resolved = resolve(cwd, raw);
+  // Resolve symlinks for existing files; fall back to resolved path for new files
+  let real: string;
+  try {
+    real = realpathSync(resolved);
+  } catch {
+    real = resolved;
+  }
+  const normalized = real.endsWith("/") ? real : real + "/";
   const normalizedCwd = cwd.endsWith("/") ? cwd : cwd + "/";
   return normalized.startsWith(normalizedCwd);
 }
