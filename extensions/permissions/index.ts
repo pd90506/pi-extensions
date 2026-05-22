@@ -58,6 +58,15 @@ export default function (pi: ExtensionAPI) {
       }
     }
     updateStatus(ctx);
+
+    // Restore warning widget if level 5
+    if (currentLevel === 5) {
+      ctx.ui.setWidget("permissions-warning", [
+        "⚠️ BYPASS MODE — All tool calls auto-approved without confirmation",
+      ]);
+    } else {
+      ctx.ui.setWidget("permissions-warning", undefined);
+    }
   });
 
   function setLevel(level: PermissionLevel, ctx: ExtensionContext) {
@@ -144,6 +153,27 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setWidget("permissions-warning", undefined);
     }
   }
+
+  // ── Shift+Tab shortcut — cycle permission levels ──
+  pi.registerShortcut("shift+tab", {
+    description: "Cycle permission level",
+    handler: async (ctx) => {
+      if (!ctx.hasUI) return;
+
+      const options = ([1, 2, 3, 4, 5] as PermissionLevel[]).map((l) => {
+        const marker = l === currentLevel ? " ✓" : "";
+        return `${LEVEL_STATUS[l]} — ${LEVEL_NAMES[l]}${marker}`;
+      });
+
+      const choice = await ctx.ui.select("Select permission level:", options);
+      if (choice) {
+        const idx = options.indexOf(choice);
+        if (idx >= 0) {
+          await activateLevel((idx + 1) as PermissionLevel, ctx);
+        }
+      }
+    },
+  });
 
   // ── Tool call interception ──
   pi.on("tool_call", async (event, ctx) => {
