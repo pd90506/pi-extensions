@@ -101,14 +101,43 @@ When a skill says "dispatch in parallel" → use parallel mode of \`subagent\`.
     return hasSubagents;
   }
 
-  // ── Bootstrap injection guard ───────────────────────────────────────────
+  // ── Helpers ─────────────────────────────────────────────────────────────
 
-  let bootstrapInjected = false;
+  function hasBootstrapInSession(ctx: { sessionManager?: { getEntries?: () => Array<{ customType?: string }> } }): boolean {
+    try {
+      const entries = ctx.sessionManager?.getEntries?.();
+      if (!entries) return false;
+      return entries.some((e) => e.customType === "superpowers-bootstrap");
+    } catch {
+      return false;
+    }
+  }
+
+  function buildBootstrapMessage(): string {
+    const subagentNote = hasSubagents
+      ? "pi-subagents is available. Use the `subagent` tool when skills ask to dispatch tasks."
+      : "⚠️ pi-subagents is NOT installed. Skills that dispatch subagents (dispatching-parallel-agents, subagent-driven-development, executing-plans) will not work.\nTell the user to run: pi install npm:pi-subagents";
+
+    return `<EXTREMELY_IMPORTANT>
+You have superpowers (${version}).
+
+${usingSuperpowersContent}
+
+## Tool Mapping for Pi
+
+Skills are written for Claude Code tool names. Always translate to Pi equivalents:
+
+${piToolMapping}
+
+## Status
+
+${subagentNote}
+</EXTREMELY_IMPORTANT>`;
+  }
 
   // ── Session lifecycle ───────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
-    bootstrapInjected = false; // Reset for new session
     checkSubagents();
 
     ctx.ui.notify(
@@ -124,58 +153,35 @@ When a skill says "dispatch in parallel" → use parallel mode of \`subagent\`.
     }
   });
 
-  // ── Inject bootstrap on first agent turn ────────────────────────────────
+  // ── Inject bootstrap (once per session, survives reload/resume) ─────────
 
-  pi.on("before_agent_start", async () => {
-    if (bootstrapInjected) return;
-    bootstrapInjected = true;
-
-    const subagentNote = hasSubagents
-      ? "pi-subagents is available. Use the `subagent` tool when skills ask to dispatch tasks."
-      : `⚠️ pi-subagents is NOT installed. Skills that dispatch subagents (dispatching-parallel-agents, subagent-driven-development, executing-plans) will not work.\nTell the user to run: pi install npm:pi-subagents`;
+  pi.on("before_agent_start", async (_event, ctx) => {
+    // Check if bootstrap already exists in session history
+    // This prevents duplicates on reload, resume, fork, and tree navigation
+    if (hasBootstrapInSession(ctx)) return;
 
     return {
       message: {
         customType: "superpowers-bootstrap",
-        content: `<EXTREMELY_IMPORTANT>
-You have superpowers (${version}).
-
-${usingSuperpowersContent}
-
-## Tool Mapping for Pi
-
-Skills are written for Claude Code tool names. Always translate to Pi equivalents:
-
-${piToolMapping}
-
-## Status
-
-${subagentNote}
-</EXTREMELY_IMPORTANT>`,
+        content: buildBootstrapMessage(),
         display: false,
       },
     };
   });
 
-  // ── Context: filter stale bootstrap copies ──────────────────────────────
-  // prevent duplicates when navigating session tree or resuming
+  // ── Context: deduplicate bootstrap across session tree nav ──────────────
 
-  let bootstrapSeen = false;
   pi.on("context", async (event) => {
+    let seen = false;
     return {
       messages: event.messages.filter((m) => {
         const msg = m as { customType?: string };
         if (msg.customType === "superpowers-bootstrap") {
-          if (bootstrapSeen) return false;
-          bootstrapSeen = true;
+          if (seen) return false; // Drop duplicates
+          seen = true;
         }
         return true;
       }),
     };
-  });
-
-  // Reset on new sessions
-  pi.on("session_tree", () => {
-    bootstrapSeen = false;
   });
 }
