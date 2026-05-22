@@ -5,8 +5,15 @@
   "pi": {
     "extensions": [
       "./extensions/superpowers-bootstrap.ts",
-      "./extensions/permissions/index.ts"
+      "./extensions/permissions/index.ts",
+      "./ralph-loop/extensions/index.ts"
     ],
-    "skills": ["./superpowers/skills"]
+    "skills": [
+      "./superpowers/skills",
+      "./ralph-loop/skills"
+    ],
+    "prompts": [
+      "./ralph-loop/prompts"
+    ]
   }
 }

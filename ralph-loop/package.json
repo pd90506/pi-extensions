@@ -1,0 +1,12 @@
+{
+  "name": "ralph-loop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ralph Wiggum technique for Pi — continuous agent loops with fresh-context subagents, on-disk state, and structured completion detection",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions/index.ts"],
+    "skills": ["./skills/SKILL.md"],
+    "prompts": ["./prompts/ralph-plan.md", "./prompts/ralph-build.md"]
+  }
+}
