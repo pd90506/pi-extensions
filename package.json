@@ -5,8 +5,8 @@
   "pi": {
     "extensions": [
       "./extensions/superpowers-bootstrap.ts",
-      "./extensions/permissions/index.ts",
-      "./ralph-loop/extensions/index.ts"
+      "./ralph-loop/extensions/index.ts",
+      "./extensions/corrective-review/index.ts"
     ],
     "skills": [
       "./superpowers/skills",
