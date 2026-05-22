@@ -59,7 +59,8 @@ async function classifyAnthropic(
   });
 
   if (!response.ok) {
-    throw new Error(`Classification API error: ${response.status}`);
+    const body = await response.text();
+    throw new Error(`Classification API error ${response.status}: ${body}`);
   }
 
   const data = (await response.json()) as {
@@ -93,7 +94,8 @@ async function classifyOpenAI(
   });
 
   if (!response.ok) {
-    throw new Error(`Classification API error: ${response.status}`);
+    const body = await response.text();
+    throw new Error(`Classification API error ${response.status}: ${body}`);
   }
 
   const data = (await response.json()) as {
@@ -104,8 +106,19 @@ async function classifyOpenAI(
 }
 
 function parseClassification(text: string): ClassificationResult {
-  // Try to extract JSON from the response
-  const jsonMatch = text.match(/\{[^}]+\}/);
+  // Try parsing the full response as JSON first (handles nested braces in reason)
+  try {
+    const parsed = JSON.parse(text.trim());
+    const risk = parsed.risk as RiskLevel;
+    if (risk === "low" || risk === "medium" || risk === "high") {
+      return { risk, reason: parsed.reason ?? "No reason provided" };
+    }
+  } catch {
+    // Not valid JSON — try regex extraction as fallback
+  }
+
+  // Fallback: regex extraction (fragile, only used when full parse fails)
+  const jsonMatch = text.match(/\{(?:[^{}]|\{[^{}]*\})*\}/);
   if (jsonMatch) {
     try {
       const parsed = JSON.parse(jsonMatch[0]);
