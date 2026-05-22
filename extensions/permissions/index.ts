@@ -396,8 +396,26 @@ export default function (pi: ExtensionAPI) {
     decision: Decision & { action: "prompt" },
     ctx: ExtensionContext,
   ): Promise<boolean> {
+    // Level 4 bash classification
     if (toolName === "bash" && decision.needsClassification) {
-      return classifyThenPrompt(input, ctx);
+      const allowed = await classifyThenPrompt(input, ctx);
+
+      if (!allowed && isDenyThresholdExceeded()) {
+        // Threshold exceeded — escalate to user
+        const command = input.command as string;
+        const choice = await ctx.ui.select(
+          `⚠️ Auto Mode — deny threshold reached (${denyTracker.consecutive} consecutive, ${denyTracker.total} total)\n\n  ${command}\n\n  Classifier is blocking this action. Allow manually?`,
+          ["Yes, allow this once", "No, keep blocking"],
+        );
+        if (choice?.startsWith("Yes")) {
+          denyTracker.consecutive = 0;
+          persistDenyTracker();
+          return true;
+        }
+        return false;
+      }
+
+      return allowed;
     }
 
     const commandDetail = toolName === "bash"
@@ -417,77 +435,64 @@ export default function (pi: ExtensionAPI) {
     input: Record<string, unknown>,
     ctx: ExtensionContext,
   ): Promise<boolean> {
-    const command = input.command as string;
+    const command = (input.command as string) ?? "";
+    const toolName = "bash";
 
-    // 1. Local heuristic classifier (instant, always available)
+    // 1. Local heuristic (instant, no API call)
     const local = classifyBashCommandLocal(command);
 
-    if (local.risk === "low") return true;
+    if (local.risk === "low") {
+      resetConsecutiveDenies();
+      return true;
+    }
 
     if (local.risk === "high") {
-      const choice = await ctx.ui.select(
-        `⚠️ bash (Auto Mode — 🔴 HIGH risk)\n\n  ${command}\n\n  Reason: ${local.reason}\n\nAllow?`,
-        ["Yes", "No"],
-      );
-      return choice === "Yes";
+      return handleBlock("Destructive command pattern detected", ctx);
     }
 
-    // 2. Medium risk — refine with LLM using current main model
+    // 2. Medium risk — two-stage transcript classifier
     try {
       const model = ctx.model;
-      if (model) {
-        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-        if (auth.ok && auth.apiKey) {
-          const response = await complete(
-            model,
-            {
-              messages: [
-                {
-                  role: "user",
-                  content: [
-                    {
-                      type: "text",
-                      text: `${CLASSIFICATION_PROMPT}\n\nCommand: ${command}\nWorking directory: ${ctx.cwd}`,
-                    },
-                  ],
-                  timestamp: Date.now(),
-                },
-              ],
-            },
-            {
-              apiKey: auth.apiKey,
-              headers: auth.headers,
-              maxTokens: 256,
-              signal: ctx.signal,
-            },
-          );
+      if (!model) throw new Error("No model configured");
 
-          const text = response.content
-            .filter((c): c is { type: "text"; text: string } => c.type === "text")
-            .map((c) => c.text)
-            .join("\n");
-
-          if (text.trim()) {
-            const llm = parseClassification(text);
-            if (llm.risk === "low") return true;
-            const riskLabel = llm.risk === "high" ? "🔴 HIGH" : "🟡 MEDIUM";
-            const choice = await ctx.ui.select(
-              `⚠️ bash (Auto Mode — ${riskLabel} risk)\n\n  ${command}\n\n  Reason: ${llm.reason}\n\nAllow?`,
-              ["Yes", "No"],
-            );
-            return choice === "Yes";
-          }
-        }
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!auth.ok || !auth.apiKey) {
+        throw new Error(`Classifier auth failed: ${auth.error ?? "no API key"}`);
       }
-    } catch {
-      // LLM call failed — fall through to prompt
-    }
 
-    // 3. Fallback: prompt user with local heuristic result
-    const choice = await ctx.ui.select(
-      `⚠️ bash (Auto Mode — 🟡 MEDIUM risk)\n\n  ${command}\n\n  Reason: ${local.reason}\n\nAllow?`,
-      ["Yes", "No"],
-    );
-    return choice === "Yes";
+      // Build transcript from session
+      const entries = ctx.sessionManager.getEntries();
+      const transcript = buildClassifierTranscript(entries, toolName, input);
+
+      // Run two-stage classifier
+      const result = await classifyWithTranscript(
+        transcript,
+        command,
+        complete,
+        model,
+        (m) => ctx.modelRegistry.getApiKeyAndHeaders(m),
+        buildStage1Prompt,
+        buildStage2Prompt,
+        ctx.signal,
+      );
+
+      if (result.verdict === "allow") {
+        resetConsecutiveDenies();
+        return true;
+      }
+
+      return handleBlock(result.reason, ctx);
+    } catch (err) {
+      // Fail-closed: classifier unavailable → block
+      const message = err instanceof Error ? err.message : String(err);
+      return handleBlock(`Auto-mode classifier unavailable: ${message}`, ctx);
+    }
+  }
+
+  function handleBlock(_reason: string, _ctx: ExtensionContext): false {
+    denyTracker.consecutive++;
+    denyTracker.total++;
+    persistDenyTracker();
+    return false;
   }
 }
