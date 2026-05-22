@@ -13,10 +13,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-// Use jiti-provided CJS __dirname instead of import.meta.url
-// which may not be available in Pi's extension loading context.
-const extDir = __dirname;
+// Resolve package root: try jiti __dirname, fall back to import.meta.url
+let extDir: string;
+try {
+  extDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
+} catch {
+  extDir = path.resolve(".");
+}
 const packageRoot = path.resolve(extDir, "..");
 const superpowersDir = path.join(packageRoot, "superpowers");
 const skillsDir = path.join(superpowersDir, "skills");
