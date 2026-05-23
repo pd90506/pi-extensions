@@ -173,6 +173,7 @@ export default function (pi: ExtensionAPI) {
                 text: `[Corrective review found issues. Re-working… (cycle ${reviewCycleCount}/${config.maxReviewCycles})]`,
               },
             ],
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
           } as any,
         };
       }

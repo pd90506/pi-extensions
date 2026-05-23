@@ -42,21 +42,19 @@ interface HandlerRecord {
   handler: (...args: unknown[]) => unknown;
 }
 
-function createMockAPI(): {
+function createMockAPI(opts?: { verdict?: "PASS" | "FAIL" }): {
   api: ExtensionAPI;
   handlers: HandlerRecord[];
   execCalls: Array<{ command: string; args: string[] }>;
 } {
+  const verdict = opts?.verdict ?? "PASS";
   const handlers: HandlerRecord[] = [];
   const execCalls: Array<{ command: string; args: string[] }> = [];
 
-  // Stub exec that returns a mock PASS verdict
-  let mockExecResult: ExecResult = {
-    stdout: "PASS\nAll checks passed.",
-    stderr: "",
-    code: 0,
-    killed: false,
-  };
+  // Stub exec that returns a mock verdict
+  const mockExecResult: ExecResult = verdict === "PASS"
+    ? { stdout: "PASS\nAll checks passed.", stderr: "", code: 0, killed: false }
+    : { stdout: "FAIL\nMissing evidence for claims.", stderr: "", code: 0, killed: false };
 
   const api = {
     on(event: string, handler: (...args: unknown[]) => unknown) {
@@ -319,6 +317,48 @@ test("message_enforces maxReviewCycles", async () => {
   const result = await msgEndHandler(assistantMessageEnd("response 3"), ctx);
   assert(result === undefined, "Cycle 3: should be undefined");
   assert(execCalls.length === 2, "Cycle 3: should NOT have spawned another review");
+});
+
+test("message_end FAIL returns replacement with usage property", async () => {
+  const { api, handlers, execCalls } = createMockAPI({ verdict: "FAIL" });
+  await createExtension(api);
+
+  // Initialize session state
+  const sessionHandler = handlers.find((h) => h.event === "session_start")!.handler;
+  await sessionHandler({ type: "session_start", reason: "new" }, createMockContext());
+
+  // Simulate user input
+  const inputHandler = handlers.find((h) => h.event === "input")!.handler;
+  inputHandler({ type: "input", text: "test", source: "interactive" }, {});
+
+  // Simulate a tool result
+  const toolHandler = handlers.find((h) => h.event === "tool_result")!.handler;
+  toolHandler(toolResultEvent("bash", "some result"), {});
+
+  // Trigger message_end
+  const msgEndHandler = handlers.find((h) => h.event === "message_end")!.handler;
+  const ctx = createMockContext();
+
+  const result = (await msgEndHandler(
+    assistantMessageEnd("draft response"),
+    ctx,
+  )) as MessageEndEventResult | undefined;
+
+  assert(result !== undefined, "FAIL should return a replacement message");
+  assert(result!.message !== undefined, "Result should have message property");
+
+  // Verify the replacement message has a usage property (prevents FooterComponent crash)
+  const msg = result!.message as Record<string, unknown>;
+  assert(msg.usage !== undefined, "Replacement message must include usage");
+  const usage = msg.usage as Record<string, unknown>;
+  assert(typeof usage.input === "number", "usage.input must be a number");
+  assert(typeof usage.output === "number", "usage.output must be a number");
+  assert(typeof usage.cacheRead === "number", "usage.cacheRead must be a number");
+  assert(typeof usage.cacheWrite === "number", "usage.cacheWrite must be a number");
+  const cost = usage.cost as Record<string, unknown>;
+  assert(typeof cost.total === "number", "usage.cost.total must be a number");
+
+  assert(execCalls.length === 1, "Should have spawned review subprocess");
 });
 
 // ── Summary ────────────────────────────────────────────────────────────
