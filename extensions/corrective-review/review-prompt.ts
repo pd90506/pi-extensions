@@ -95,7 +95,13 @@ Respond with PASS or FAIL on the first line, followed by your reasoning.`;
 export function parseReviewVerdict(
   response: string,
 ): { verdict: "PASS" | "FAIL"; feedback: string } {
-  const firstLine = response.trim().split("\n")[0] ?? "";
+  // Normalize the first line: trim whitespace and strip markdown formatting
+  // (e.g., **PASS**, *PASS*, # PASS, ## FAIL, PASS:, etc.)
+  let firstLine = response.trim().split("\n")[0] ?? "";
+  firstLine = firstLine
+    .replace(/^[*_#\s]+/, "")  // leading markdown: **, *, _, #, whitespace
+    .replace(/[*_\s:]+$/, "")   // trailing markdown and colons
+    .trim();
   const verdict = firstLine.toUpperCase().startsWith("PASS") ? "PASS" : "FAIL";
   const feedback = response.trim();
   return { verdict, feedback };
