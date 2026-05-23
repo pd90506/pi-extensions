@@ -89,20 +89,48 @@ ${input.draftResponse}
 Respond with PASS or FAIL on the first line, followed by your reasoning.`;
 }
 
+// ANSI escape code regex: strips color codes, cursor movement, etc.
+const ANSI_REGEX = /\x1b\[[0-9;]*[a-zA-Z]/g;
+
 /**
  * Parse the review subprocess stdout to extract PASS/FAIL verdict.
+ *
+ * Handles:
+ * - Plain PASS / FAIL
+ * - Markdown formatting: **PASS**, *FAIL*, ## PASS, FAIL:
+ * - ANSI escape codes (terminal color output)
+ * - Leading/trailing whitespace and empty lines
+ * - Empty output (defaults to FAIL)
  */
 export function parseReviewVerdict(
   response: string,
 ): { verdict: "PASS" | "FAIL"; feedback: string } {
-  // Normalize the first line: trim whitespace and strip markdown formatting
-  // (e.g., **PASS**, *PASS*, # PASS, ## FAIL, PASS:, etc.)
-  let firstLine = response.trim().split("\n")[0] ?? "";
+  // Strip ANSI escape codes first (color codes from terminal output)
+  const clean = response.replace(ANSI_REGEX, "");
+
+  // Find the first non-empty line
+  const lines = clean.split("\n");
+  let firstLine = "";
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      firstLine = trimmed;
+      break;
+    }
+  }
+
+  // All empty → fail closed with placeholder feedback
+  if (firstLine === "") {
+    return { verdict: "FAIL", feedback: "(empty review output)" };
+  }
+
+  // Strip markdown formatting: **, *, _, #, whitespace, trailing colons
   firstLine = firstLine
-    .replace(/^[*_#\s]+/, "")  // leading markdown: **, *, _, #, whitespace
-    .replace(/[*_\s:]+$/, "")   // trailing markdown and colons
+    .replace(/^[*_#\s]+/, "")
+    .replace(/[*_\s:]+$/, "")
     .trim();
+
   const verdict = firstLine.toUpperCase().startsWith("PASS") ? "PASS" : "FAIL";
-  const feedback = response.trim();
+  const feedback = clean.trim();
   return { verdict, feedback };
 }
