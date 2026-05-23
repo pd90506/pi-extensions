@@ -1,7 +1,15 @@
 // extensions/corrective-review/review-prompt.ts
+//
+// Builds the system prompt and review task for the corrective review subprocess.
+// The review runs as a standalone pi -p process (no skills, no extensions, no tools).
 
 import type { CorrectiveReviewConfig } from "./config.ts";
+import type { ReviewInput } from "./collector.ts";
 
+/**
+ * Build the system prompt that defines the reviewer's role and evaluation criteria.
+ * This is the first part of the prompt passed to the review subprocess.
+ */
 export function buildReviewSystemPrompt(config: CorrectiveReviewConfig): string {
   const dimensions: string[] = [];
 
@@ -28,7 +36,7 @@ export function buildReviewSystemPrompt(config: CorrectiveReviewConfig): string 
 
   const dimSection = dimensions.join("\n\n");
 
-  return `You are a corrective review subagent. Your job is to review an agent's work and flag quality issues.
+  return `You are a corrective reviewer. Your job is to review an agent's work and flag quality issues.
 
 You receive:
 - 🎯 The original user prompt
@@ -53,4 +61,42 @@ Respond with EXACTLY one of these two words on the first line, followed by an ex
 - Do not generate user-visible output outside this review.
 - Be specific: cite tool call numbers and exact issues.
 - A FAIL is serious. Only fail when there is clear evidence of a problem.`;
+}
+
+/**
+ * Build the review task string with the collected review inputs.
+ * This is the second part of the prompt passed to the review subprocess.
+ */
+export function buildReviewTask(input: ReviewInput): string {
+  const toolHistoryStr = input.toolHistory
+    .map(
+      (call, i) =>
+        `[${i + 1}] ${call.toolName}\n    Result: ${call.resultSummary}${call.isError ? " (ERROR)" : ""}`,
+    )
+    .join("\n\n");
+
+  return `Review this agent's work:
+
+## Original User Prompt
+${input.userPrompt || "(not found)"}
+
+## Tool Call History
+${toolHistoryStr || "(no tool calls)"}
+
+## Draft Response
+${input.draftResponse}
+
+Respond with PASS or FAIL on the first line, followed by your reasoning.`;
+}
+
+/**
+ * Parse the review subprocess stdout to extract PASS/FAIL verdict.
+ */
+export function parseReviewVerdict(
+  response: string,
+): { verdict: "PASS" | "FAIL"; feedback: string } {
+  const firstLine = response.trim().split("\n")[0] ?? "";
+  const verdict = firstLine.toUpperCase().startsWith("PASS") ? "PASS" : "FAIL";
+  const feedback = response.trim();
+  return { verdict, feedback };
 }

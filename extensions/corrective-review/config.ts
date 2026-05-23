@@ -9,6 +9,12 @@ export interface CorrectiveReviewConfig {
   lazyShortcuts: boolean;
   /** Enable evidence support dimension (🧾). */
   evidenceSupport: boolean;
+  /**
+   * Model to use for the review subprocess.
+   * Uses the current session model when not set.
+   * Format: "provider/model-id" (e.g., "deepseek/deepseek-v4-pro").
+   */
+  reviewModel?: string;
 }
 
 export const DEFAULT_CONFIG: CorrectiveReviewConfig = {

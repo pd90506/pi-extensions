@@ -1,18 +1,26 @@
 // extensions/corrective-review/index.ts
 //
 // Corrective Review Extension
-// Spawns a corrective review subagent once per prompt cycle at agent_end.
+// Spawns a standalone pi -p subprocess at agent_end to review the agent's work.
 // Evaluates tool call history + draft response across 3 dimensions.
 // On FAIL, injects feedback as a steer to trigger re-tooling.
+//
+// Unlike the previous steer-based approach (which relied on the agent calling
+// the subagent tool — and could be silently ignored), this extension runs the
+// review as an independent pi process via pi.exec(). The review verdict is
+// parsed directly by the extension, which then injects feedback only on FAIL.
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG, type CorrectiveReviewConfig } from "./config.ts";
 import { extractReviewFromAgentEnd } from "./collector.ts";
 import {
-  buildReviewAgentConfig,
+  buildReviewSystemPrompt,
   buildReviewTask,
-  REVIEW_AGENT_NAME,
-} from "./review-subagent.ts";
+  parseReviewVerdict,
+} from "./review-prompt.ts";
 
 export default function (pi: ExtensionAPI) {
   const config: CorrectiveReviewConfig = { ...DEFAULT_CONFIG };
@@ -21,80 +29,65 @@ export default function (pi: ExtensionAPI) {
 
   /** Number of review steers injected for the current user prompt. */
   let reviewCycleCount = 0;
-  /** Whether the review subagent has been registered this session. */
-  let agentRegistered = false;
-
-  // ── Subagent availability check ──────────────────────────────────────
-
-  function checkSubagentAvailable(): boolean {
-    return pi.getAllTools().some((t) => t.name === "subagent");
-  }
 
   // ── Session lifecycle ────────────────────────────────────────────────
 
   pi.on("session_start", (_event, ctx) => {
     reviewCycleCount = 0;
-    agentRegistered = false;
-
-    if (!checkSubagentAvailable()) {
-      ctx.ui.notify(
-        "corrective-review: pi-subagents required. Install: pi install npm:pi-subagents",
-        "warning",
-      );
-      return;
-    }
-
-    ctx.ui.notify("Corrective Review active · max 2 cycles", "info");
+    ctx.ui.notify("Corrective Review active · max 2 cycles (subprocess)", "info");
   });
 
   // ── Reset cycle count on new user input ──────────────────────────────
 
   pi.on("input", (event, _ctx) => {
-    // Only reset on actual user input, not on steer delivery or other events
     if (event.source === "interactive") {
       reviewCycleCount = 0;
     }
   });
 
-  // ── Send a review steer to register the subagent ─────────────────────
+  // ── Run the review as a standalone pi subprocess ─────────────────────
 
-  function sendRegistrationSteer(): void {
-    const agentConfig = buildReviewAgentConfig(config);
-    const createPayload = JSON.stringify({
-      action: "create",
-      config: agentConfig,
-    });
-    pi.sendMessage(
-      {
-        customType: "corrective-review",
-        content:
-          `[CORRECTIVE-REVIEW] You MUST call the subagent tool with exactly this payload to register the corrective-reviewer agent:\n${createPayload}`,
-        display: false,
-      },
-      { deliverAs: "steer" },
+  async function runReviewSubprocess(
+    reviewInput: ReturnType<typeof extractReviewFromAgentEnd>,
+    model: string,
+  ): Promise<{ verdict: "PASS" | "FAIL"; feedback: string }> {
+    // Build full prompt: system prompt + separator + review task
+    const systemPrompt = buildReviewSystemPrompt(config);
+    const reviewTask = buildReviewTask(reviewInput);
+    const fullPrompt = `${systemPrompt}\n\n---\n\n${reviewTask}`;
+
+    // Write to temp file to avoid shell escaping issues
+    const taskFile = path.join(
+      os.tmpdir(),
+      `corrective-review-${Date.now()}.txt`,
     );
+    fs.writeFileSync(taskFile, fullPrompt);
+
+    try {
+      const result = await pi.exec("pi", [
+        "-p",
+        "--no-extensions",
+        "--no-skills",
+        "--model", model,
+        `@${taskFile}`,
+      ], { timeout: 60_000 });
+
+      return parseReviewVerdict(result.stdout);
+    } finally {
+      // Clean up temp file
+      try { fs.unlinkSync(taskFile); } catch { /* ignore */ }
+    }
   }
 
-  // ── Send a review steer with the collected review task ───────────────
+  // ── Inject feedback as a steer on FAIL ───────────────────────────────
 
-  function sendReviewSteer(reviewTask: string): void {
-    const subagentPayload = JSON.stringify({
-      agent: REVIEW_AGENT_NAME,
-      task: reviewTask,
-    });
-
+  function injectFeedback(feedback: string): void {
     pi.sendMessage(
       {
-        customType: "corrective-review",
+        customType: "corrective-review-feedback",
         content:
-          `[CORRECTIVE-REVIEW cycle ${reviewCycleCount}/${config.maxReviewCycles}]\n\n` +
-          `You MUST call the subagent tool with exactly this payload:\n${subagentPayload}\n\n` +
-          `The review subagent returns PASS or FAIL on the first line.\n` +
-          `- If PASS: respond with a brief confirmation (e.g., "✅ Review passed") and then provide your original response to the user.\n` +
-          `- If FAIL: read the feedback, go back to tool calling to fix the issues, then draft a new response. Do NOT respond to the user yet until issues are fixed.\n\n` +
-          (reviewCycleCount >= config.maxReviewCycles
-            ? "This is the final review cycle. Respond to the user regardless of the verdict."
-            : `This is review cycle ${reviewCycleCount}/${config.maxReviewCycles}. Do not respond to the user until review passes.`),
+          `[CORRECTIVE-REVIEW FAIL cycle ${reviewCycleCount}/${config.maxReviewCycles}]\n\n${feedback}\n\n` +
+          `Fix the issues above and re-draft your response. Do NOT respond to the user yet.`,
         display: false,
       },
       { deliverAs: "steer" },
@@ -103,14 +96,9 @@ export default function (pi: ExtensionAPI) {
 
   // ── Review gate at agent_end ───────────────────────────────────────
 
-  pi.on("agent_end", (event, ctx) => {
+  pi.on("agent_end", async (event, ctx) => {
     try {
-      // Skip if subagent tool not available
-      if (!checkSubagentAvailable()) return;
-
       // Extract review inputs from all messages in this prompt cycle.
-      // agent_end fires once per prompt (vs turn_end which fires every turn),
-      // so only one review steer is injected at the end of all tool calling.
       const reviewInput = extractReviewFromAgentEnd(event.messages);
 
       // Skip if no tool calls were made (conversational turns don't need review)
@@ -125,18 +113,21 @@ export default function (pi: ExtensionAPI) {
       // Increment cycle count
       reviewCycleCount++;
 
-      // Register the review agent on first use
-      if (!agentRegistered) {
-        sendRegistrationSteer();
-        agentRegistered = true;
-      }
+      // Determine model: explicit override → current session model → fallback
+      const model =
+        config.reviewModel ??
+        ctx.model?.id ??
+        "deepseek/deepseek-v4-pro";
 
-      // Build review task and inject review steer
-      const reviewTask = buildReviewTask(reviewInput);
-      sendReviewSteer(reviewTask);
+      // Run the review subprocess
+      const { verdict, feedback } = await runReviewSubprocess(reviewInput, model);
+
+      if (verdict === "FAIL") {
+        injectFeedback(feedback);
+      }
+      // On PASS: do nothing — the agent's response goes to the user as-is.
     } catch (err) {
       // Fail closed: silently skip review on errors to avoid breaking the session.
-      // The agent's response goes through unreviewed.
       ctx.ui.notify(
         `corrective-review: review skipped due to error: ${err instanceof Error ? err.message : String(err)}`,
         "warning",
@@ -148,6 +139,5 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     reviewCycleCount = 0;
-    agentRegistered = false;
   });
 }
