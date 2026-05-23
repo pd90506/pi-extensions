@@ -80,15 +80,14 @@ test("handles output with only empty lines before verdict", () => {
 
 // ── Edge cases ────────────────────────────────────────────────────────
 
-test("defaults to FAIL for unrecognized first line", () => {
+test("returns null for unrecognizable output", () => {
   const result = parseReviewVerdict("UNCLEAR\nNot sure what to do.");
-  assert(result.verdict === "FAIL", `Expected FAIL for unrecognized, got ${result.verdict}`);
+  assert(result === null, "Unrecognizable output should return null");
 });
 
 test("handles empty response gracefully", () => {
   const result = parseReviewVerdict("");
-  assert(result.verdict === "FAIL", `Expected FAIL for empty, got ${result.verdict}`);
-  assert(result.feedback === "(empty review output)", "Should indicate empty output");
+  assert(result === null, "Empty response should return null");
 });
 
 test("handles single-line PASS without trailing newline", () => {
@@ -96,9 +95,30 @@ test("handles single-line PASS without trailing newline", () => {
   assert(result.verdict === "PASS", `Expected PASS, got ${result.verdict}`);
 });
 
-test("only first line matters — PASS in body doesn't flip verdict", () => {
+test("last PASS/FAIL line wins — reasoning before verdict", () => {
+  const result = parseReviewVerdict(
+    "Let me think...\nTool call 1 was fine.\nPASS\nAll checks passed.",
+  );
+  assert(result.verdict === "PASS", "Last PASS line should win");
+});
+
+test("returns null when no standalone PASS/FAIL found", () => {
+  const result = parseReviewVerdict(
+    "Let me look more carefully. Tool call 1 had no output.\n\nActually wait - I should re-read.\nI think PASS is correct.PASS",
+  );
+  // "I think PASS is correct.PASS" doesn't start with PASS → no verdict found
+  assert(result === null, "No standalone PASS/FAIL at line start should return null");
+});
+
+test("first-line FAIL wins over later PASS", () => {
+  // First line check finds FAIL → immediate return, no fallback scan
+  const result = parseReviewVerdict("FAIL\nWait, rethinking.\nPASS");
+  assert(result?.verdict === "FAIL", "First-line FAIL should win");
+});
+
+test("PASS/FAIL embedded in body doesn't count", () => {
   const result = parseReviewVerdict("FAIL\nBut the agent did pass some checks.");
-  assert(result.verdict === "FAIL", "FAIL on first line should win");
+  assert(result.verdict === "FAIL", "FAIL on line start should win over 'pass' in body");
 });
 
 test("case-insensitive: lowercase pass", () => {
@@ -130,8 +150,7 @@ test("strips ANSI codes with multiple escape sequences", () => {
 
 test("handles output with only whitespace lines", () => {
   const result = parseReviewVerdict("   \n  \n  ");
-  assert(result.verdict === "FAIL", "All whitespace should default to FAIL");
-  assert(result.feedback === "(empty review output)", "Should indicate empty output");
+  assert(result === null, "All whitespace should return null");
 });
 
 // ── Summary ───────────────────────────────────────────────────────────

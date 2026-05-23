@@ -118,42 +118,57 @@ const ANSI_REGEX = /\x1b\[[0-9;]*[a-zA-Z]/g;
 /**
  * Parse the review subprocess stdout to extract PASS/FAIL verdict.
  *
+ * Strategy (hybrid):
+ * 1. Try first non-empty line → if PASS/FAIL, use it (fast path for well-formatted)
+ * 2. Fall back to bottom-up scan → last PASS/FAIL line wins (for models that think before verdict)
+ * 3. If still nothing → return null (caller skips review)
+ *
  * Handles:
  * - Plain PASS / FAIL
  * - Markdown formatting: **PASS**, *FAIL*, ## PASS, FAIL:
  * - ANSI escape codes (terminal color output)
  * - Leading/trailing whitespace and empty lines
- * - Empty output (defaults to FAIL)
+ * - Models that output reasoning before verdict (last PASS/FAIL line wins)
+ * - Empty / unparseable output (returns null)
  */
 export function parseReviewVerdict(
   response: string,
-): { verdict: "PASS" | "FAIL"; feedback: string } {
+): { verdict: "PASS" | "FAIL"; feedback: string } | null {
   // Strip ANSI escape codes first (color codes from terminal output)
   const clean = response.replace(ANSI_REGEX, "");
+  if (!clean.trim()) return null;
 
-  // Find the first non-empty line
   const lines = clean.split("\n");
-  let firstLine = "";
+
+  // Helper: strip markdown formatting and check if line starts with PASS/FAIL
+  function tryParseLine(raw: string): "PASS" | "FAIL" | null {
+    const stripped = raw
+      .replace(/^[*_#\s]+/, "")
+      .replace(/[*_\s:]+$/, "")
+      .trim()
+      .toUpperCase();
+    if (stripped.startsWith("PASS")) return "PASS";
+    if (stripped.startsWith("FAIL")) return "FAIL";
+    return null;
+  }
+
+  // Step 1: Try first non-empty line
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.length > 0) {
-      firstLine = trimmed;
-      break;
-    }
+    if (trimmed.length === 0) continue;
+    const verdict = tryParseLine(trimmed);
+    if (verdict) return { verdict, feedback: clean.trim() };
+    break; // first non-empty line didn't match → fall through to scan
   }
 
-  // All empty → fail closed with placeholder feedback
-  if (firstLine === "") {
-    return { verdict: "FAIL", feedback: "(empty review output)" };
+  // Step 2: Bottom-up scan (last PASS/FAIL wins for models that think first)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (trimmed.length === 0) continue;
+    const verdict = tryParseLine(trimmed);
+    if (verdict) return { verdict, feedback: clean.trim() };
   }
 
-  // Strip markdown formatting: **, *, _, #, whitespace, trailing colons
-  firstLine = firstLine
-    .replace(/^[*_#\s]+/, "")
-    .replace(/[*_\s:]+$/, "")
-    .trim();
-
-  const verdict = firstLine.toUpperCase().startsWith("PASS") ? "PASS" : "FAIL";
-  const feedback = clean.trim();
-  return { verdict, feedback };
+  // Step 3: Nothing found → skip
+  return null;
 }
