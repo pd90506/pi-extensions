@@ -10,12 +10,14 @@ import type {
 } from "@earendil-works/pi-ai";
 
 export interface ReviewInput {
-  /** The original user prompt that started this cycle. */
+  /** The current user prompt. */
   userPrompt: string;
-  /** Tool call history: name and result summary for each call. */
+  /** Tool call history for the current prompt cycle. */
   toolHistory: ToolCallRecord[];
   /** The agent's draft response text. */
   draftResponse: string;
+  /** Previous prompt cycles for context (most recent first). */
+  previousRounds?: { prompt: string; toolCalls: ToolCallRecord[] }[];
 }
 
 export interface ToolCallRecord {

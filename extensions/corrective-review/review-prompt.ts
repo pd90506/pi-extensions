@@ -4,7 +4,7 @@
 // The review runs as a standalone pi -p process (no skills, no extensions, no tools).
 
 import type { CorrectiveReviewConfig } from "./config.ts";
-import type { ReviewInput } from "./collector.ts";
+import type { ReviewInput, ToolCallRecord } from "./collector.ts";
 
 /**
  * Build the system prompt that defines the reviewer's role and evaluation criteria.
@@ -67,26 +67,49 @@ Respond with EXACTLY one of these two words on the first line, followed by an ex
  * Build the review task string with the collected review inputs.
  * This is the second part of the prompt passed to the review subprocess.
  */
-export function buildReviewTask(input: ReviewInput): string {
-  const toolHistoryStr = input.toolHistory
+function formatToolCalls(calls: ToolCallRecord[], prefix: string): string {
+  return calls
     .map(
       (call, i) =>
-        `[${i + 1}] ${call.toolName}\n    Result: ${call.resultSummary}${call.isError ? " (ERROR)" : ""}`,
+        `${prefix}[${i + 1}] ${call.toolName}\n    Result: ${call.resultSummary}${call.isError ? " (ERROR)" : ""}`,
     )
     .join("\n\n");
+}
 
-  return `Review this agent's work:
+export function buildReviewTask(input: ReviewInput): string {
+  const parts: string[] = [];
 
-## Original User Prompt
+  // Previous rounds (most recent first in the array, but displayed oldest → newest)
+  if (input.previousRounds && input.previousRounds.length > 0) {
+    const reversed = [...input.previousRounds].reverse();
+    for (let i = 0; i < reversed.length; i++) {
+      const round = reversed[i];
+      parts.push(
+        `## Previous Round ${i + 1} (User Prompt)
+${round.prompt || "(not found)"}
+
+### Tool Calls (Round ${i + 1})
+${formatToolCalls(round.toolCalls, "  ") || "(no tool calls)"}`,
+      );
+    }
+    parts.push("---");
+  }
+
+  // Current round
+  const currentToolCalls = formatToolCalls(input.toolHistory, "");
+  parts.push(
+    `## Current Round (User Prompt)
 ${input.userPrompt || "(not found)"}
 
 ## Tool Call History
-${toolHistoryStr || "(no tool calls)"}
+${currentToolCalls || "(no tool calls)"}
 
 ## Draft Response
-${input.draftResponse}
+${input.draftResponse}`,
+  );
 
-Respond with PASS or FAIL on the first line, followed by your reasoning.`;
+  parts.push("\nRespond with PASS or FAIL on the first line, followed by your reasoning.");
+  return parts.join("\n\n");
 }
 
 // ANSI escape code regex: strips color codes, cursor movement, etc.
