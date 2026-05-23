@@ -34,14 +34,20 @@ export default function (pi: ExtensionAPI) {
   let toolCalls: ToolCallRecord[] = [];
   let userPrompt = "";
 
+  // Sliding window: previous prompt cycles (oldest first)
+  // Each entry holds that cycle's user prompt and tool calls.
+  // Trimmed to config.reviewWindow - 1 (current cycle is separate).
+  let promptHistory: { prompt: string; toolCalls: ToolCallRecord[] }[] = [];
+
   // ── Session lifecycle ────────────────────────────────────────────────
 
   pi.on("session_start", (_event, ctx) => {
     reviewCycleCount = 0;
     toolCalls = [];
     userPrompt = "";
+    promptHistory = [];
     ctx.ui.notify(
-      "Corrective Review active · max 2 cycles (pre-response gate)",
+      `Corrective Review active · max ${config.maxReviewCycles} cycle(s) · ${config.reviewWindow}-round window`,
       "info",
     );
   });
@@ -50,6 +56,15 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("input", (event, _ctx) => {
     if (event.source === "interactive") {
+      // Save current cycle to sliding window before starting new one
+      if (userPrompt && toolCalls.length > 0) {
+        promptHistory.push({ prompt: userPrompt, toolCalls: [...toolCalls] });
+        // Keep only last N-1 (current cycle is separate)
+        const maxHistory = Math.max(1, config.reviewWindow - 1);
+        if (promptHistory.length > maxHistory) {
+          promptHistory = promptHistory.slice(-maxHistory);
+        }
+      }
       userPrompt = event.text;
       toolCalls = [];
       reviewCycleCount = 0;
@@ -72,20 +87,30 @@ export default function (pi: ExtensionAPI) {
   async function runReviewSubprocess(
     reviewInput: ReviewInput,
     model: string,
-  ): Promise<{ verdict: "PASS" | "FAIL"; feedback: string }> {
+  ): Promise<{ verdict: "PASS" | "FAIL"; feedback: string } | null> {
     const systemPrompt = buildReviewSystemPrompt(config);
     const reviewTask = buildReviewTask(reviewInput);
     const fullPrompt = `${systemPrompt}\n\n---\n\n${reviewTask}`;
 
     const taskFile = path.join(os.tmpdir(), `corrective-review-${Date.now()}.txt`);
+    const sessionDir = path.join(os.tmpdir(), "corrective-review-sessions");
+    fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(taskFile, fullPrompt);
 
     try {
       const result = await pi.exec("pi", [
         "-p", "--no-extensions", "--no-skills",
+        "--session-dir", sessionDir,
         "--model", model,
         `@${taskFile}`,
       ], { timeout: 60_000 });
+
+      // Fail-open: if subprocess failed or produced no output,
+      // skip the review rather than injecting meaningless feedback.
+      if (result.code !== 0 || !result.stdout.trim()) {
+        return null;
+      }
+
       return parseReviewVerdict(result.stdout);
     } finally {
       try { fs.unlinkSync(taskFile); } catch { /* ignore */ }
@@ -144,14 +169,31 @@ export default function (pi: ExtensionAPI) {
           0,
           MAX_DRAFT_LENGTH,
         ),
+        previousRounds:
+          promptHistory.length > 0
+            ? promptHistory.map((h) => ({
+                prompt: h.prompt,
+                toolCalls: h.toolCalls,
+              }))
+            : undefined,
       };
 
       const model =
         config.reviewModel ?? ctx.model?.id ?? "deepseek/deepseek-v4-pro";
-      const { verdict, feedback } = await runReviewSubprocess(
-        reviewInput,
-        model,
-      );
+      const result = await runReviewSubprocess(reviewInput, model);
+
+      ctx.ui.setStatus("corrective-review", undefined);
+
+      // Subprocess failed or returned empty → skip review, let response through
+      if (result === null) {
+        ctx.ui.notify(
+          "corrective-review: review subprocess failed, response passed through",
+          "warning",
+        );
+        return;
+      }
+
+      const { verdict, feedback } = result;
 
       ctx.ui.setStatus("corrective-review", undefined);
       ctx.ui.notify(
@@ -163,18 +205,31 @@ export default function (pi: ExtensionAPI) {
 
       if (verdict === "FAIL") {
         injectFeedback(feedback);
-        // Replace the message — steer will trigger re-work before user sees it
+        // Append review feedback to original message instead of replacing it.
+        // Keeps history complete and shows why review failed.
+        const original = event.message;
+        const originalContent = Array.isArray(original.content)
+          ? original.content
+          : [{ type: "text" as const, text: extractText(original.content) }];
         return {
           message: {
             role: "assistant",
             content: [
+              ...originalContent,
               {
-                type: "text",
-                text: `[Corrective review found issues. Re-working… (cycle ${reviewCycleCount}/${config.maxReviewCycles})]`,
+                type: "text" as const,
+                text: `\n\n---\n[CORRECTIVE-REVIEW FAIL cycle ${reviewCycleCount}/${config.maxReviewCycles}]\n\n${feedback}\n\nFix the issues above and re-draft your response. Do NOT respond to the user yet.`,
               },
             ],
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
-          } as any,
+            // Preserve original usage; fall back to zero usage to avoid FooterComponent crash.
+            usage: (original as any).usage ?? {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: { total: 0 },
+            },
+          },
         };
       }
       // PASS: return undefined → original message renders to user

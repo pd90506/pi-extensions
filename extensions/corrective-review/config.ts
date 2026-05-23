@@ -10,6 +10,12 @@ export interface CorrectiveReviewConfig {
   /** Enable evidence support dimension (🧾). */
   evidenceSupport: boolean;
   /**
+   * Number of prompt cycles to keep in the sliding review window.
+   * Reviewer sees this many recent user prompts + their tool calls.
+   * Minimum 1 (current only). Default: 2.
+   */
+  reviewWindow: number;
+  /**
    * Model to use for the review subprocess.
    * Uses the current session model when not set.
    * Format: "provider/model-id" (e.g., "deepseek/deepseek-v4-pro").
@@ -22,4 +28,5 @@ export const DEFAULT_CONFIG: CorrectiveReviewConfig = {
   intentAlignment: true,
   lazyShortcuts: true,
   evidenceSupport: true,
+  reviewWindow: 2,
 };
