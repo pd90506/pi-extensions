@@ -1,13 +1,13 @@
 // extensions/corrective-review/index.ts
 //
 // Corrective Review Extension
-// Spawns a corrective review subagent once per prompt cycle at turn_end.
+// Spawns a corrective review subagent once per prompt cycle at agent_end.
 // Evaluates tool call history + draft response across 3 dimensions.
 // On FAIL, injects feedback as a steer to trigger re-tooling.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG, type CorrectiveReviewConfig } from "./config.ts";
-import { collectReviewInput, extractText } from "./collector.ts";
+import { extractReviewFromAgentEnd } from "./collector.ts";
 import {
   buildReviewAgentConfig,
   buildReviewTask,
@@ -49,11 +49,12 @@ export default function (pi: ExtensionAPI) {
 
   // ── Reset cycle count on new user input ──────────────────────────────
 
-  pi.on("input", (_event, _ctx) => {
-    reviewCycleCount = 0;
+  pi.on("input", (event, _ctx) => {
+    // Only reset on actual user input, not on steer delivery or other events
+    if (event.source === "interactive") {
+      reviewCycleCount = 0;
+    }
   });
-
-  // ── Review gate at turn_end ──────────────────────────────────────────
 
   // ── Send a review steer to register the subagent ─────────────────────
 
@@ -65,7 +66,7 @@ export default function (pi: ExtensionAPI) {
     });
     pi.sendMessage(
       {
-        customType: "corrective-review-setup",
+        customType: "corrective-review",
         content:
           `[CORRECTIVE-REVIEW] You MUST call the subagent tool with exactly this payload to register the corrective-reviewer agent:\n${createPayload}`,
         display: false,
@@ -100,31 +101,26 @@ export default function (pi: ExtensionAPI) {
     );
   }
 
-  // ── Review gate at turn_end ──────────────────────────────────────────
+  // ── Review gate at agent_end ───────────────────────────────────────
 
-  pi.on("turn_end", (event, ctx) => {
+  pi.on("agent_end", (event, ctx) => {
     try {
       // Skip if subagent tool not available
       if (!checkSubagentAvailable()) return;
 
+      // Extract review inputs from all messages in this prompt cycle.
+      // agent_end fires once per prompt (vs turn_end which fires every turn),
+      // so only one review steer is injected at the end of all tool calling.
+      const reviewInput = extractReviewFromAgentEnd(event.messages);
+
       // Skip if no tool calls were made (conversational turns don't need review)
-      if (event.toolResults.length === 0) return;
+      if (reviewInput.toolHistory.length === 0) return;
 
       // Skip if we've hit max review cycles for this prompt
       if (reviewCycleCount >= config.maxReviewCycles) {
         reviewCycleCount = 0;
         return;
       }
-
-      // Extract draft response text from the assistant message
-      const draftResponse = extractText(event.message.content);
-
-      // Collect review inputs from session state + current turn
-      const reviewInput = collectReviewInput(
-        ctx.sessionManager,
-        event.toolResults,
-        draftResponse,
-      );
 
       // Increment cycle count
       reviewCycleCount++;

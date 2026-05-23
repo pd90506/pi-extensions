@@ -119,3 +119,72 @@ export function collectReviewInput(
     draftResponse: draftResponseText.slice(0, MAX_DRAFT_LENGTH),
   };
 }
+
+// ── Agent end collector ─────────────────────────────────────────────────
+
+/**
+ * Message shape from agent_end event.messages.
+ * Matches Pi's internal message type (role-based union).
+ */
+interface AgentEndMessage {
+  role: string;
+  content?: unknown;
+  toolName?: string;
+  isError?: boolean;
+}
+
+/**
+ * Extract review inputs from agent_end event messages.
+ *
+ * agent_end fires once per prompt cycle (vs turn_end which fires every turn).
+ * It provides all messages from the complete prompt cycle.
+ *
+ * @param messages - All messages from the agent_end event.
+ */
+export function extractReviewFromAgentEnd(
+  messages: AgentEndMessage[],
+): ReviewInput {
+  // 1. Find the first user message as the user prompt.
+  let userPrompt = "";
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      userPrompt = extractText(
+        (msg.content as string | (TextContent | ImageContent)[]) ?? "",
+      );
+      break;
+    }
+  }
+
+  // 2. Collect all toolResult messages into tool history.
+  const toolHistory: ToolCallRecord[] = [];
+  for (const msg of messages) {
+    if (msg.role === "toolResult") {
+      const text = extractText(
+        (msg.content as string | (TextContent | ImageContent)[]) ?? "",
+      );
+      toolHistory.push({
+        toolName: msg.toolName ?? "unknown",
+        resultSummary: text.slice(0, MAX_RESULT_LENGTH) || "(empty output)",
+        isError: msg.isError ?? false,
+      });
+    }
+  }
+
+  // 3. Use the last assistant message as the draft response.
+  let draftResponse = "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg && msg.role === "assistant") {
+      draftResponse = extractText(
+        (msg.content as string | (TextContent | ImageContent)[]) ?? "",
+      );
+      break;
+    }
+  }
+
+  return {
+    userPrompt,
+    toolHistory,
+    draftResponse: draftResponse.slice(0, MAX_DRAFT_LENGTH),
+  };
+}
