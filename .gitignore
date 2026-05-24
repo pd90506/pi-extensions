@@ -1,2 +1,13 @@
+# macOS / OS artifacts
 .DS_Store
+.AppleDouble
+.LSOverride
+.Spotlight-V100/
+.Trashes/
+
+# Windows artifacts
+Thumbs.db
+Desktop.ini
+
+# Dependencies
 node_modules/

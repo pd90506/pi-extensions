@@ -2,10 +2,10 @@
 
 ## Repository shape
 
-- This top-level checkout is a container for Pi-related extensions/packages.
-- The main project currently lives in `superpowers/`, which is itself a nested Git repository.
-- When changing files under `superpowers/`, check Git state from both the top-level directory and `superpowers/` if ownership matters.
-- Pi only auto-loads context files from the current directory and its parents, so this root file exists to point agents at the nested project context.
+- This top-level checkout is a single Git repository containing Pi-related extensions/packages.
+- The Superpowers project lives in `superpowers/` as a normal tracked subdirectory, not a nested Git repository.
+- When changing files under `superpowers/`, follow the additional project instructions in `superpowers/AGENTS.md`.
+- Pi only auto-loads context files from the current directory and its parents, so this root file exists to point agents at the `superpowers/` project context when starting from the repo root.
 
 ## Primary project: `superpowers/`
 
@@ -26,7 +26,7 @@ Before making substantive changes in `superpowers/`, read:
 
 ## Non-negotiable contribution rules
 
-The nested `superpowers/AGENTS.md` is authoritative. In particular:
+The `superpowers/AGENTS.md` file is authoritative for changes under `superpowers/`. In particular:
 
 - Do not open PRs without reading and fully satisfying `superpowers/.github/PULL_REQUEST_TEMPLATE.md`.
 - Search existing open and closed PRs before proposing upstream contributions.
@@ -52,7 +52,6 @@ From the top-level directory:
 ```bash
 # Inspect repository state
 git status --short
-git -C superpowers status --short
 
 # Install the local Superpowers package into Pi for testing
 pi install ./superpowers
