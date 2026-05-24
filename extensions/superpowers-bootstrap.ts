@@ -57,7 +57,7 @@ function readIfExists(filePath: string): string {
 const PI_TOOL_MAPPING = `
 | Skill references | Pi equivalent |
 |-----------------|---------------|
-| \`Skill\` tool (invoke a skill) | \`read\` to load \`skills/<skill-name>/SKILL.md\`, or \`/skill:name\` |
+| \`Skill\` tool (invoke a skill) | Use \`read\` on the exact \`<location>\` path shown for that skill in \`<available_skills>\`. In interactive Pi, the user can also force-load with \`/skill:name\`. |
 | \`Task\` tool (dispatch subagent) | \`subagent\` (requires \`pi-subagents\` package) |
 | \`Read\` (file reading) | \`read\` |
 | \`Write\` (file creation) | \`write\` |
@@ -107,12 +107,37 @@ export default function (pi: ExtensionAPI) {
 
   // ── Bootstrap injection guard ───────────────────────────────────────────
 
-  type SessionCtx = { sessionManager?: { getEntries?: () => Array<{ customType?: string }> } };
+  type SessionCtx = {
+    sessionManager?: {
+      buildSessionContext?: () => { messages?: Array<{ customType?: string }> };
+      getEntries?: () => Array<{
+        type?: string;
+        customType?: string;
+        message?: { customType?: string };
+      }>;
+    };
+  };
 
-  function hasBootstrapInSession(ctx: SessionCtx): boolean {
+  function hasBootstrapInCurrentContext(ctx: SessionCtx): boolean {
+    try {
+      const messages = ctx.sessionManager?.buildSessionContext?.().messages;
+      if (messages) {
+        return messages.some((m) => m.customType === "superpowers-bootstrap");
+      }
+    } catch {
+      // Fall through to the compatibility fallback below.
+    }
+
+    // Compatibility fallback for older Pi versions without buildSessionContext().
+    // Prefer current-context checks above because getEntries() includes other
+    // branches and compacted-away history.
     try {
       const entries = ctx.sessionManager?.getEntries?.();
-      return entries?.some((e) => e.customType === "superpowers-bootstrap") ?? false;
+      return entries?.some((e) =>
+        e.type === "custom_message" &&
+        (e.customType === "superpowers-bootstrap" ||
+          e.message?.customType === "superpowers-bootstrap")
+      ) ?? false;
     } catch {
       return false;
     }
@@ -125,6 +150,10 @@ export default function (pi: ExtensionAPI) {
 
     return `<EXTREMELY_IMPORTANT>
 You have superpowers (${version}).
+
+## Pi Adaptation
+
+The using-superpowers content below is already loaded. Do not load using-superpowers again. When it mentions Claude Code's \`Skill\` tool, use Pi's \`read\` tool on the matching skill \`<location>\` from \`<available_skills>\` instead.
 
 ${usingSuperpowersContent}
 
@@ -156,7 +185,7 @@ ${subagentNote}
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
-    if (hasBootstrapInSession(ctx)) return;
+    if (hasBootstrapInCurrentContext(ctx)) return;
 
     return {
       message: {
