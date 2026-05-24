@@ -4,15 +4,7 @@
   "keywords": ["pi-package"],
   "pi": {
     "extensions": [
-      "./extensions/superpowers-bootstrap.ts",
-      "./ralph-loop/extensions/index.ts"
-    ],
-    "skills": [
-      "./superpowers/skills",
-      "./ralph-loop/skills"
-    ],
-    "prompts": [
-      "./ralph-loop/prompts"
+      "./extensions/intent-plan-discipline.ts"
     ]
   }
 }
