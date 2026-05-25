@@ -4,7 +4,7 @@
   "keywords": ["pi-package"],
   "pi": {
     "extensions": [
-      "./extensions/intent-plan-discipline.ts"
+      "./extensions/skill-router.ts"
     ]
   }
 }
