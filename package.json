@@ -4,15 +4,10 @@
   "keywords": ["pi-package"],
   "pi": {
     "extensions": [
-      "./extensions/superpowers-bootstrap.ts",
-      "./ralph-loop/extensions/index.ts"
+      "./extensions/superpowers-bootstrap.ts"
     ],
     "skills": [
-      "./superpowers/skills",
-      "./ralph-loop/skills"
-    ],
-    "prompts": [
-      "./ralph-loop/prompts"
+      "./superpowers/skills"
     ]
   }
 }

@@ -4,8 +4,7 @@
  * Bridges superpowers skills into Pi:
  * 1. Injects using-superpowers bootstrap + Pi tool mapping on first turn
  * 2. Detects pi-subagents availability and warns if missing
- * 3. Reads VERSION file for version tracking
- * 4. Deduplicates injection across reload, resume, fork, tree navigation
+ * 3. Deduplicates injection across reload, resume, fork, tree navigation
  *
  * Mirrors what OpenCode's messages.transform and Claude Code's SessionStart
  * hook do, but using Pi's extension API.
@@ -30,14 +29,6 @@ const superpowersDir = path.join(packageRoot, "superpowers");
 const skillsDir = path.join(superpowersDir, "skills");
 
 // ── File utilities ────────────────────────────────────────────────────────
-
-function readVersion(): string {
-  try {
-    return fs.readFileSync(path.join(superpowersDir, "VERSION"), "utf8").trim();
-  } catch {
-    return "unknown";
-  }
-}
 
 function stripFrontmatter(content: string): string {
   const match = content.match(/^---\n[\s\S]*?\n---\n/);
@@ -86,8 +77,6 @@ When a skill says "dispatch in parallel" → use parallel mode of \`subagent\`.
 // ── Extension ─────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-  const version = readVersion();
-
   const usingSuperpowersContent = stripFrontmatter(
     readIfExists(path.join(skillsDir, "using-superpowers", "SKILL.md")),
   );
@@ -149,7 +138,7 @@ export default function (pi: ExtensionAPI) {
       : "⚠️ pi-subagents is NOT installed. Skills that require subagents (dispatching-parallel-agents, subagent-driven-development, executing-plans) will not work.\nTell the user to run: pi install npm:pi-subagents";
 
     return `<EXTREMELY_IMPORTANT>
-You have superpowers (${version}).
+You have superpowers.
 
 ## Pi Adaptation
 
@@ -174,7 +163,7 @@ ${subagentNote}
   pi.on("session_start", async (_event, ctx) => {
     checkSubagents();
 
-    ctx.ui.notify(`Superpowers ${version} · 14 skills loaded`, "info");
+    ctx.ui.notify("Superpowers loaded", "info");
 
     if (!hasSubagents) {
       ctx.ui.notify(
