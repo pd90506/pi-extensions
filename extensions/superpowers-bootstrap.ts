@@ -207,17 +207,6 @@ export default function (pi: ExtensionAPI) {
     return hasSubagents;
   }
 
-  // ── Status update ────────────────────────────────────────────────────────
-
-  function updateStatus(ctx: ExtensionContext): void {
-    if (config.model) {
-      const thinking = config.thinking ? ` · ${config.thinking}` : "";
-      ctx.ui.setStatus("superpowers-model", ctx.ui.theme.fg("accent", `⚡ ${config.model}${thinking}`));
-    } else {
-      ctx.ui.setStatus("superpowers-model", undefined);
-    }
-  }
-
   // ── Bootstrap injection guard ───────────────────────────────────────────
 
   type SessionCtx = {
@@ -370,7 +359,6 @@ ${modelNote}
       config = { ...DEFAULT_CONFIG };
       saveConfig(config);
       ctx.ui.notify(`Reset to default: ${config.model} (thinking: ${config.thinking})`, "info");
-      updateStatus(ctx);
       return;
     }
 
@@ -423,7 +411,6 @@ ${modelNote}
     };
     saveConfig(config);
     ctx.ui.notify(`Subagent model: ${config.model} (thinking: ${config.thinking})`, "info");
-    updateStatus(ctx);
   }
 
   // ── Event handlers ──────────────────────────────────────────────────────
@@ -441,7 +428,6 @@ ${modelNote}
       );
     }
 
-    updateStatus(ctx);
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
