@@ -1,0 +1,12 @@
+{
+  "packages": [
+    "..",
+    {
+      "source": "npm:@tintinweb/pi-subagents",
+      "extensions": [],
+      "skills": [],
+      "prompts": [],
+      "themes": []
+    }
+  ]
+}
